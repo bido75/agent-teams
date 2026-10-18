@@ -279,6 +279,37 @@ export const DEFAULT_CURSOR_AGENT_TREE_SWEEP_PORT: CursorAgentTreeSweepPort = {
 // is not an agent.
 const CURSOR_AGENT_COMMAND_PATTERN = /cursor-agent/i;
 const CURSOR_AGENT_PRINT_FLAG = /--print\b/;
+const CURSOR_AGENT_WORKSPACE_FLAG = /--workspace[\s=]/;
+
+/**
+ * The Cursor CLI installer (`curl https://cursor.com/install | bash` and the
+ * Windows `irm ...?win32=true` variant) registers the same agent under the
+ * ambiguous bare name `agent` / `agent.exe` / `agent.cmd` in `~/.local/bin` or
+ * `%LOCALAPPDATA%\cursor-agent\bin`. A tree rooted at that spelling is still a
+ * cursor-agent tree, and a sweep that only knows the `cursor-agent` spelling
+ * leaves it - and the proxy port it holds - standing.
+ *
+ * A bare `agent` executable alone is NOT identity: other tools ship the same
+ * basename. It only counts as a cursor-agent root when the executable path
+ * carries a cursor-agent install location AND the command line carries both
+ * launch proofs the sweep already requires (`--print`, which a user's
+ * interactive session does not pass, and `--workspace`, which the orchestrator
+ * always passes).
+ */
+const CURSOR_BARE_AGENT_BASENAMES = new Set(['agent', 'agent.exe', 'agent.cmd']);
+const CURSOR_BARE_AGENT_INSTALL_PATH_PATTERN =
+  /(?:cursor-agent[\\/]|\.local[\\/]bin[\\/]agent(?:\.exe|\.cmd)?)$/i;
+
+export function isCursorBareAgentExecutableCommand(command: string): boolean {
+  const trimmed = command.trim();
+  if (!CURSOR_AGENT_PRINT_FLAG.test(trimmed) || !CURSOR_AGENT_WORKSPACE_FLAG.test(trimmed)) {
+    return false;
+  }
+  const firstToken = trimmed.split(/\s+/, 1)[0] ?? '';
+  const basename = firstToken.split(/[\\/]/).pop()?.toLowerCase() ?? '';
+  if (!CURSOR_BARE_AGENT_BASENAMES.has(basename)) return false;
+  return CURSOR_BARE_AGENT_INSTALL_PATH_PATTERN.test(firstToken.toLowerCase());
+}
 
 /**
  * Normalizes only what two spellings of the same directory may differ in: a
@@ -461,7 +492,10 @@ function stringIncludesAnyMarker(value: string, markers: readonly string[]): boo
 
 export function isCursorAgentRootProcess(row: RuntimeProcessTableRow): boolean {
   const command = row.command ?? '';
-  return CURSOR_AGENT_COMMAND_PATTERN.test(command) && CURSOR_AGENT_PRINT_FLAG.test(command);
+  if (CURSOR_AGENT_COMMAND_PATTERN.test(command) && CURSOR_AGENT_PRINT_FLAG.test(command)) {
+    return true;
+  }
+  return isCursorBareAgentExecutableCommand(command);
 }
 
 export async function cleanupCursorAgentProcessTrees(

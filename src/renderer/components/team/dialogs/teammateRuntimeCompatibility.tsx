@@ -66,6 +66,10 @@ const PROVIDER_LABELS: Record<TeamProviderId, string> = {
   codex: 'Codex',
   gemini: 'Gemini',
   opencode: 'OpenCode',
+  antigravity: 'Antigravity',
+  minimax: 'MiniMax Code',
+  kimi: 'Kimi Code',
+  cline: 'Cline',
 };
 
 function getProviderLabel(providerId: TeamProviderId): string {

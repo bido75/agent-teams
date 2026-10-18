@@ -15,7 +15,9 @@ import { getErrorMessage } from '@shared/utils/errorHandling';
 
 import { buildProviderControlPlaneCliCommandArgs } from '../../runtime/providerCliCommandArgs';
 import { resolveTeamProviderId } from '../../runtime/providerRuntimeEnv';
+import { isExternalCliTeamProviderId } from '../runtime/externalCli';
 
+import { TeamLaunchValidationError } from './TeamLaunchValidationError';
 import {
   type CodexChatGptModelSupportProbe,
   type CodexChatGptModelSupportProbeResult,
@@ -429,6 +431,11 @@ export async function resolveAndValidateLaunchIdentity(
   ports: LaunchIdentityResolutionPorts
 ): Promise<ProviderModelLaunchIdentity> {
   const leadProviderId = resolveTeamProviderId(input.request.providerId);
+  if (isExternalCliTeamProviderId(leadProviderId)) {
+    throw new TeamLaunchValidationError(
+      `External CLI provider "${leadProviderId}" cannot lead a team yet. Create the team with anthropic, codex, gemini, or opencode as the provider, then assign "${leadProviderId}" to individual members.`
+    );
+  }
   const factsByProvider = new Map<TeamProviderId, RuntimeProviderLaunchFacts>();
   const codexChatGptProbeResultsByModel = new Map<
     string,

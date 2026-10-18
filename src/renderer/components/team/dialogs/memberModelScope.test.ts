@@ -83,29 +83,48 @@ const providerStatusById = new Map<TeamProviderId, CliProviderStatus>([
 const providerLoadingById = new Map<TeamProviderId, boolean>();
 
 describe('getDialogTeamModelValidationError', () => {
-  it.each(['cursor-acp/auto', 'kiro/auto'])(
-    'blocks unsupported extension-bound model %s without scheduling it for preflight',
-    (modelId) => {
-      expect(
-        getDialogTeamModelValidationError({
-          selectedProviderId: 'opencode',
-          selectedModel: modelId,
-          members: [],
-          validateMembers: true,
-          runtimeProviderStatusById: new Map(),
-          runtimeProviderLoadingById: providerLoadingById,
-        })
-      ).toContain('not supported by the current Agent Teams launch runtime');
-      expect(
-        resolveProviderScopedMemberModel({
-          selectedProviderId: 'codex',
-          memberProviderId: 'opencode',
-          memberModel: modelId,
-          runtimeProviderStatusById: new Map(),
-        })
-      ).toEqual({ providerId: 'opencode', model: '' });
-    }
-  );
+  it('allows cursor-acp models now that Cursor is wired end to end', () => {
+    expect(
+      getDialogTeamModelValidationError({
+        selectedProviderId: 'opencode',
+        selectedModel: 'cursor-acp/auto',
+        members: [],
+        validateMembers: true,
+        runtimeProviderStatusById: new Map(),
+        runtimeProviderLoadingById: providerLoadingById,
+      })
+    ).toBeNull();
+    expect(
+      resolveProviderScopedMemberModel({
+        selectedProviderId: 'codex',
+        memberProviderId: 'opencode',
+        memberModel: 'cursor-acp/auto',
+        runtimeProviderStatusById: new Map(),
+      })
+    ).toEqual({ providerId: 'opencode', model: 'cursor-acp/auto' });
+  });
+
+  it('blocks unsupported extension-bound model kiro/auto without scheduling it for preflight', () => {
+    const modelId = 'kiro/auto';
+    expect(
+      getDialogTeamModelValidationError({
+        selectedProviderId: 'opencode',
+        selectedModel: modelId,
+        members: [],
+        validateMembers: true,
+        runtimeProviderStatusById: new Map(),
+        runtimeProviderLoadingById: providerLoadingById,
+      })
+    ).toContain('not supported by the current Agent Teams launch runtime');
+    expect(
+      resolveProviderScopedMemberModel({
+        selectedProviderId: 'codex',
+        memberProviderId: 'opencode',
+        memberModel: modelId,
+        runtimeProviderStatusById: new Map(),
+      })
+    ).toEqual({ providerId: 'opencode', model: '' });
+  });
 
   it('allows a built-in Ollama lead route outside the general OpenCode catalog', () => {
     expect(

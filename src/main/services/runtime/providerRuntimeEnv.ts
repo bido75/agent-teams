@@ -5,6 +5,7 @@ import {
 } from '@shared/constants/anthropicConnectionMode';
 
 import { ConfigManager } from '../infrastructure/ConfigManager';
+import { isExternalCliTeamProviderId } from '../team/runtime/externalCli/ExternalCliProviderSpecs';
 
 import type { CliProviderId, TeamProviderId } from '@shared/types';
 
@@ -160,7 +161,12 @@ export function applyProviderRuntimeEnv(
 export function resolveRuntimeProviderId(
   providerId: RuntimeEnvProviderId | undefined
 ): CliProviderId {
-  if (providerId === 'codex' || providerId === 'gemini' || providerId === 'opencode') {
+  if (
+    providerId === 'codex' ||
+    providerId === 'gemini' ||
+    providerId === 'opencode' ||
+    isExternalCliTeamProviderId(providerId)
+  ) {
     return providerId;
   }
 
@@ -168,7 +174,10 @@ export function resolveRuntimeProviderId(
 }
 
 export function resolveTeamProviderId(providerId: TeamProviderId | undefined): TeamProviderId {
-  return providerId === 'codex' || providerId === 'gemini' || providerId === 'opencode'
+  return providerId === 'codex' ||
+    providerId === 'gemini' ||
+    providerId === 'opencode' ||
+    isExternalCliTeamProviderId(providerId)
     ? providerId
     : 'anthropic';
 }

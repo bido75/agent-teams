@@ -153,7 +153,9 @@ export function parseProviderId(value: unknown): TeamLaunchRequest['providerId']
   if (isTeamProviderId(value)) {
     return value;
   }
-  throw new TeamRequestValidationError('providerId must be anthropic, codex, gemini, or opencode');
+  throw new TeamRequestValidationError(
+    'providerId must be anthropic, codex, gemini, opencode, antigravity, minimax, kimi, or cline'
+  );
 }
 
 export function parseProviderBackendId(

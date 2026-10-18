@@ -319,6 +319,14 @@ function getConnectionDescription(
       return t('providerRuntime.connection.descriptions.gemini');
     case 'opencode':
       return t('providerRuntime.connection.descriptions.opencode');
+    case 'antigravity':
+      return 'Sign in with your Google account (Gemini OAuth) or set GEMINI_API_KEY, then launch Antigravity teams.';
+    case 'minimax':
+      return 'Run `mcode login` or configure a MiniMax API key before launching teams.';
+    case 'kimi':
+      return 'Run `kimi auth login` (Moonshot OAuth/API key) before launching teams.';
+    case 'cline':
+      return 'Run `cline auth login` or configure a provider API key before launching teams.';
   }
 }
 
@@ -335,6 +343,14 @@ function getRuntimeDescription(
       return t('providerRuntime.runtime.descriptions.gemini');
     case 'opencode':
       return t('providerRuntime.runtime.descriptions.opencode');
+    case 'antigravity':
+      return 'Members run headless `agy -p` turns with the agent-teams MCP server attached.';
+    case 'minimax':
+      return 'Members run headless `mcode exec` turns with the agent-teams MCP server attached.';
+    case 'kimi':
+      return 'Members run headless `kimi --print` turns with the agent-teams MCP server attached.';
+    case 'cline':
+      return 'Members run headless `cline --json` turns with the agent-teams MCP server attached.';
   }
 }
 

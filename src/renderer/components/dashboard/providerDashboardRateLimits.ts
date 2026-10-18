@@ -298,6 +298,10 @@ export function getDashboardRateLimitsForProvider(
       return getAnthropicDashboardRateLimits(provider);
     case 'gemini':
     case 'opencode':
+    case 'antigravity':
+    case 'minimax':
+    case 'kimi':
+    case 'cline':
       return null;
   }
 }

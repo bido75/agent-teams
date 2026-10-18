@@ -61,7 +61,16 @@ let statusCacheGeneration = 0;
 const STATUS_CACHE_TTL_MS = 5_000;
 const MAX_PARALLEL_PROVIDER_RUNTIME_REQUESTS = 3;
 const PARALLEL_PROVIDER_STATUS_ENV = 'CLAUDE_TEAM_PARALLEL_PROVIDER_STATUS';
-const CLI_PROVIDER_IDS = new Set<unknown>(['anthropic', 'codex', 'gemini', 'opencode']);
+const CLI_PROVIDER_IDS = new Set<unknown>([
+  'anthropic',
+  'codex',
+  'gemini',
+  'opencode',
+  'antigravity',
+  'minimax',
+  'kimi',
+  'cline',
+]);
 const FRONTEND_MULTIMODEL_PROVIDER_IDS = new Set<CliProviderId>(['anthropic', 'codex', 'opencode']);
 const INDEPENDENT_PROVIDER_RUNTIME_REQUEST_IDS = new Set<CliProviderId>(['opencode']);
 const MAX_PROVIDER_STATUS_PROJECT_PATH_LENGTH = 4_096;

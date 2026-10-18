@@ -34,7 +34,15 @@ export type CliPlatform =
 
 export type CliFlavor = 'claude' | 'agent_teams_orchestrator';
 
-export type CliProviderId = 'anthropic' | 'codex' | 'gemini' | 'opencode';
+export type CliProviderId =
+  | 'anthropic'
+  | 'codex'
+  | 'gemini'
+  | 'opencode'
+  | 'antigravity'
+  | 'minimax'
+  | 'kimi'
+  | 'cline';
 export type CliProviderAuthMode = 'auto' | 'oauth' | 'chatgpt' | 'api_key';
 export const CLI_PROVIDER_STATUS_DEFERRED_MESSAGE = 'Provider status will refresh when needed.';
 export const CLI_PROVIDER_STATUS_UNAVAILABLE_MESSAGE = 'Provider status unavailable';

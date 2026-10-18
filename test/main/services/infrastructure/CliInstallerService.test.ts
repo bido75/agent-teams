@@ -133,6 +133,10 @@ function createTestProviderStatus(
       codex: 'gpt-5.4',
       gemini: 'gemini-2.5-pro',
       opencode: 'opencode/big-pickle',
+      antigravity: 'gemini-2.5-pro',
+      minimax: 'minimax/MiniMax-M1',
+      kimi: 'kimi-k2-0905',
+      cline: 'anthropic/claude-sonnet-4-5',
     }[providerId] ?? `${providerId}/default`;
 
   return {
@@ -535,6 +539,10 @@ describe('CliInstallerService', () => {
         'anthropic',
         'codex',
         'opencode',
+        'antigravity',
+        'minimax',
+        'kimi',
+        'cline',
       ]);
       expect(openCodeStatus).toMatchObject({
         displayName: 'OpenCode (200+ models)',
@@ -720,7 +728,7 @@ describe('CliInstallerService', () => {
       expect(resolveInteractiveShellEnvBestEffortMock).not.toHaveBeenCalled();
       expect(status.authStatusChecking).toBe(false);
       expect(status.authLoggedIn).toBe(false);
-      expect(status.providers).toHaveLength(3);
+      expect(status.providers).toHaveLength(7);
       expect(
         status.providers.every(
           (provider) => provider.statusMessage === 'Provider status will refresh when needed.'

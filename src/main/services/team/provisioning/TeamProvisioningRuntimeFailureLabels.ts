@@ -17,6 +17,14 @@ export function getProviderRuntimeFailureLabel(providerId: TeamProviderId): stri
       return 'Gemini runtime';
     case 'opencode':
       return 'OpenCode runtime';
+    case 'antigravity':
+      return 'Antigravity runtime';
+    case 'minimax':
+      return 'MiniMax Code runtime';
+    case 'kimi':
+      return 'Kimi Code runtime';
+    case 'cline':
+      return 'Cline runtime';
   }
 }
 

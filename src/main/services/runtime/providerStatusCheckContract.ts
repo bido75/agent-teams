@@ -67,6 +67,14 @@ function getProviderDisplayName(providerId: CliProviderId): string {
       return 'Gemini';
     case 'opencode':
       return 'OpenCode (200+ models)';
+    case 'antigravity':
+      return 'Antigravity';
+    case 'minimax':
+      return 'MiniMax Code';
+    case 'kimi':
+      return 'Kimi Code';
+    case 'cline':
+      return 'Cline';
   }
 }
 

@@ -68,7 +68,14 @@ function normalizeOptionalBackendId(value: unknown): string | undefined {
 }
 
 function normalizeProviderId(value: unknown): TeamProviderId | undefined {
-  return value === 'anthropic' || value === 'codex' || value === 'gemini' || value === 'opencode'
+  return value === 'anthropic' ||
+    value === 'codex' ||
+    value === 'gemini' ||
+    value === 'opencode' ||
+    value === 'antigravity' ||
+    value === 'minimax' ||
+    value === 'kimi' ||
+    value === 'cline'
     ? value
     : undefined;
 }

@@ -8,7 +8,7 @@ export function getUnsupportedTeamModelRouteReason(
   model: string | undefined
 ): string | null {
   const sourceId = model?.trim().toLowerCase().split('/', 1)[0];
-  return providerId === 'opencode' && (sourceId === 'cursor-acp' || sourceId === 'kiro')
+  return providerId === 'opencode' && sourceId === 'kiro'
     ? OPENCODE_EXTENSION_BOUND_TEAM_LAUNCH_UNAVAILABLE_REASON
     : null;
 }

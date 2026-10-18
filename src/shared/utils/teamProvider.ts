@@ -2,8 +2,19 @@ import { parseOpenCodeQualifiedModelRef } from './opencodeModelRef';
 
 import type { TeamProviderId } from '@shared/types';
 
+export const TEAM_PROVIDER_IDS = [
+  'anthropic',
+  'codex',
+  'gemini',
+  'opencode',
+  'antigravity',
+  'minimax',
+  'kimi',
+  'cline',
+] as const;
+
 export function isTeamProviderId(value: unknown): value is TeamProviderId {
-  return value === 'anthropic' || value === 'codex' || value === 'gemini' || value === 'opencode';
+  return (TEAM_PROVIDER_IDS as readonly unknown[]).includes(value);
 }
 
 export function normalizeOptionalTeamProviderId(value: unknown): TeamProviderId | undefined {

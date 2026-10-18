@@ -54,6 +54,10 @@ const TEAM_PROVIDER_LABELS: Record<SupportedProviderId, string> = {
   codex: 'Codex',
   gemini: 'Gemini',
   opencode: 'OpenCode',
+  antigravity: 'Antigravity',
+  minimax: 'MiniMax Code',
+  kimi: 'Kimi Code',
+  cline: 'Cline',
 };
 
 const ANTHROPIC_ALIAS_LABELS = {
@@ -155,6 +159,10 @@ const TEAM_PROVIDER_MODEL_OPTIONS: Record<SupportedProviderId, readonly TeamProv
       },
     ],
     opencode: [{ value: '', label: 'Default', badgeLabel: 'Default' }],
+    antigravity: [{ value: '', label: 'Default', badgeLabel: 'Default' }],
+    minimax: [{ value: '', label: 'Default', badgeLabel: 'Default' }],
+    kimi: [{ value: '', label: 'Default', badgeLabel: 'Default' }],
+    cline: [{ value: '', label: 'Default', badgeLabel: 'Default' }],
   };
 
 type AnthropicAliasFamily = keyof typeof ANTHROPIC_ALIAS_LABELS;
@@ -166,6 +174,14 @@ const TEAM_PROVIDER_MODEL_ORDER: Record<SupportedProviderId, Map<string, number>
   opencode: new Map(
     TEAM_PROVIDER_MODEL_OPTIONS.opencode.map((option, index) => [option.value, index])
   ),
+  antigravity: new Map(
+    TEAM_PROVIDER_MODEL_OPTIONS.antigravity.map((option, index) => [option.value, index])
+  ),
+  minimax: new Map(
+    TEAM_PROVIDER_MODEL_OPTIONS.minimax.map((option, index) => [option.value, index])
+  ),
+  kimi: new Map(TEAM_PROVIDER_MODEL_OPTIONS.kimi.map((option, index) => [option.value, index])),
+  cline: new Map(TEAM_PROVIDER_MODEL_OPTIONS.cline.map((option, index) => [option.value, index])),
 };
 
 function extractComparableModelVersion(model: string): number[] | null {

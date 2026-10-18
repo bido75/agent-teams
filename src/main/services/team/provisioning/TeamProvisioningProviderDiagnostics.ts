@@ -394,6 +394,26 @@ function buildProviderAuthenticationHint(
         'OpenCode provider is not authenticated for runtime use. ' +
         `Authenticate the selected OpenCode provider and retry.${attemptsSuffix}`
       );
+    case 'antigravity':
+      return (
+        'Antigravity CLI is not authenticated for runtime use. ' +
+        `Authenticate in ${cliCommandLabel} (agy) and retry.${attemptsSuffix}`
+      );
+    case 'minimax':
+      return (
+        'MiniMax Code CLI is not authenticated for runtime use. ' +
+        `Run \`mcode login\` (or configure a BYOK provider) and retry.${attemptsSuffix}`
+      );
+    case 'kimi':
+      return (
+        'Kimi Code CLI is not authenticated for runtime use. ' +
+        `Run \`kimi auth login\` and retry.${attemptsSuffix}`
+      );
+    case 'cline':
+      return (
+        'Cline CLI is not authenticated for runtime use. ' +
+        `Run \`cline auth login\` and retry.${attemptsSuffix}`
+      );
   }
 }
 

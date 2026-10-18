@@ -1385,10 +1385,27 @@ async function listTeams(
     const confirmedArtifactNames = new Set<string>();
     const metaRuntimeMembers: {
       name: string;
-      providerId?: 'anthropic' | 'codex' | 'gemini' | 'opencode';
+      providerId?:
+        | 'anthropic'
+        | 'codex'
+        | 'gemini'
+        | 'opencode'
+        | 'antigravity'
+        | 'minimax'
+        | 'kimi'
+        | 'cline';
       removedAt?: unknown;
     }[] = [];
-    let leadProviderId: 'anthropic' | 'codex' | 'gemini' | 'opencode' | undefined;
+    let leadProviderId:
+      | 'anthropic'
+      | 'codex'
+      | 'gemini'
+      | 'opencode'
+      | 'antigravity'
+      | 'minimax'
+      | 'kimi'
+      | 'cline'
+      | undefined;
     let leadName: string | undefined;
     let leadColor: string | undefined;
 

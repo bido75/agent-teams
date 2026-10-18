@@ -20,7 +20,15 @@ export type MemberWorkSyncActionableWorkPriority =
   | 'blocked'
   | 'needs_clarification';
 
-export type MemberWorkSyncProviderId = 'anthropic' | 'codex' | 'gemini' | 'opencode';
+export type MemberWorkSyncProviderId =
+  | 'anthropic'
+  | 'codex'
+  | 'gemini'
+  | 'opencode'
+  | 'antigravity'
+  | 'minimax'
+  | 'kimi'
+  | 'cline';
 
 export type MemberWorkSyncReviewObligation = 'review_pickup_required' | 'review_in_progress';
 

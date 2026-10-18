@@ -409,6 +409,10 @@ export const DateGroupedSessions = memo((): React.JSX.Element => {
       codex: 0,
       gemini: 0,
       opencode: 0,
+      antigravity: 0,
+      minimax: 0,
+      kimi: 0,
+      cline: 0,
     };
 
     for (const session of searchedSessions) {

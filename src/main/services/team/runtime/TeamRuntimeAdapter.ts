@@ -15,7 +15,16 @@ import type {
   TeamProvisioningSupportDiagnostic,
 } from '@shared/types';
 
-export const TEAM_RUNTIME_PROVIDER_IDS = ['anthropic', 'codex', 'gemini', 'opencode'] as const;
+export const TEAM_RUNTIME_PROVIDER_IDS = [
+  'anthropic',
+  'codex',
+  'gemini',
+  'opencode',
+  'antigravity',
+  'minimax',
+  'kimi',
+  'cline',
+] as const;
 
 export type TeamRuntimeProviderId = (typeof TEAM_RUNTIME_PROVIDER_IDS)[number];
 
@@ -262,7 +271,7 @@ export interface TeamLaunchRuntimeAdapter {
 }
 
 export function isTeamRuntimeProviderId(value: unknown): value is TeamRuntimeProviderId {
-  return value === 'anthropic' || value === 'codex' || value === 'gemini' || value === 'opencode';
+  return (TEAM_RUNTIME_PROVIDER_IDS as readonly unknown[]).includes(value);
 }
 
 export class TeamRuntimeAdapterRegistry {

@@ -373,6 +373,10 @@ import {
   UpdaterService,
   applyCursorAgentAttributionEnv,
 } from './services';
+import {
+  EXTERNAL_CLI_TEAM_PROVIDER_IDS,
+  ExternalCliTeamRuntimeAdapter,
+} from './services/team/runtime/externalCli';
 
 import type { FileChangeEvent } from '@main/types';
 import type {
@@ -487,6 +491,12 @@ const INBOX_NOTIFY_DEBOUNCE_MS = 500;
 /** Messages sent from our UI (user_sent) - suppress notifications for these. */
 const suppressedSources = new Set(['user_sent']);
 
+function createExternalCliRuntimeAdapters(): ExternalCliTeamRuntimeAdapter[] {
+  return EXTERNAL_CLI_TEAM_PROVIDER_IDS.map(
+    (providerId) => new ExternalCliTeamRuntimeAdapter(providerId)
+  );
+}
+
 async function createOpenCodeRuntimeAdapterRegistry(
   reportProgress: (phase: string, message: string) => void = () => undefined
 ): Promise<TeamRuntimeAdapterRegistry> {
@@ -504,7 +514,7 @@ async function createOpenCodeRuntimeAdapterRegistry(
     openCodeLifecycleBridge = null;
     readOpenCodeGroupRun = null;
     configureCursorAgentAtomicReapBridge(null);
-    return new TeamRuntimeAdapterRegistry();
+    return new TeamRuntimeAdapterRegistry(createExternalCliRuntimeAdapters());
   }
 
   reportProgress('runtime-environment', 'Preparing runtime environment...');
@@ -689,6 +699,7 @@ async function createOpenCodeRuntimeAdapterRegistry(
     new OpenCodeTeamRuntimeAdapter(readinessBridge, {
       inspectLocalModelRuntime: inspectOpenCodeLocalModelRuntimeReadiness,
     }),
+    ...createExternalCliRuntimeAdapters(),
   ]);
 }
 let stopPeriodicOpenCodeHostStartupLockPurge: (() => void) | null = null;

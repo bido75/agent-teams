@@ -99,6 +99,26 @@ const PROVIDER_CAPABILITIES: Record<
     supportsApiKey: false,
     configurableAuthModes: [],
   },
+  antigravity: {
+    supportsOAuth: true,
+    supportsApiKey: true,
+    configurableAuthModes: ['auto', 'oauth', 'api_key'],
+  },
+  minimax: {
+    supportsOAuth: false,
+    supportsApiKey: true,
+    configurableAuthModes: ['auto', 'api_key'],
+  },
+  kimi: {
+    supportsOAuth: false,
+    supportsApiKey: true,
+    configurableAuthModes: ['auto', 'api_key'],
+  },
+  cline: {
+    supportsOAuth: false,
+    supportsApiKey: true,
+    configurableAuthModes: ['auto', 'api_key'],
+  },
 };
 
 const PROVIDER_API_KEY_ENV_VARS: Partial<Record<CliProviderId, string>> = {

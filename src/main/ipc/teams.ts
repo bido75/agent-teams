@@ -2442,7 +2442,11 @@ async function handlePrepareProvisioning(
   }
   if (providerId !== undefined) {
     if (!isTeamProviderId(providerId)) {
-      return { success: false, error: 'providerId must be anthropic, codex, gemini, or opencode' };
+      return {
+        success: false,
+        error:
+          'providerId must be anthropic, codex, gemini, opencode, antigravity, minimax, kimi, or cline',
+      };
     }
     validatedProviderId = providerId;
   }
@@ -2455,7 +2459,8 @@ async function handlePrepareProvisioning(
       if (!isTeamProviderId(entry)) {
         return {
           success: false,
-          error: 'providerIds entries must be anthropic, codex, gemini, or opencode',
+          error:
+            'providerIds entries must be anthropic, codex, gemini, opencode, antigravity, minimax, kimi, or cline',
         };
       }
       if (!normalized.includes(entry)) {

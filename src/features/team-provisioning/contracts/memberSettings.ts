@@ -1,4 +1,12 @@
-export type MemberSettingsProviderId = 'anthropic' | 'codex' | 'gemini' | 'opencode';
+export type MemberSettingsProviderId =
+  | 'anthropic'
+  | 'codex'
+  | 'gemini'
+  | 'opencode'
+  | 'antigravity'
+  | 'minimax'
+  | 'kimi'
+  | 'cline';
 export type MemberSettingsProviderBackendId =
   | 'auto'
   | 'adapter'

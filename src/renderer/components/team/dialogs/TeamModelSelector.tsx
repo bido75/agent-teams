@@ -264,6 +264,10 @@ const PROVIDERS: ProviderDef[] = [
   { id: 'anthropic', label: 'Anthropic', comingSoon: false },
   { id: 'codex', label: 'Codex', comingSoon: false },
   { id: 'opencode', label: 'OpenCode', comingSoon: false },
+  { id: 'antigravity', label: 'Antigravity', comingSoon: false },
+  { id: 'minimax', label: 'MiniMax', comingSoon: false },
+  { id: 'kimi', label: 'Kimi', comingSoon: false },
+  { id: 'cline', label: 'Cline', comingSoon: false },
 ];
 
 const CURATED_OPENCODE_PROVIDER_TABS = [

@@ -20,7 +20,10 @@ function parseOptionalProviderId(value: unknown, fieldName: string): ParseResult
   }
   return isTeamProviderId(value)
     ? { valid: true, value }
-    : { valid: false, error: `${fieldName} must be anthropic, codex, gemini, or opencode` };
+    : {
+        valid: false,
+        error: `${fieldName} must be anthropic, codex, gemini, opencode, antigravity, minimax, kimi, or cline`,
+      };
 }
 
 export function parseOptionalMemberProviderId(value: unknown): ParseResult<TeamProviderId> {

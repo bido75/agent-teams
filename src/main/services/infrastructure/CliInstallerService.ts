@@ -46,12 +46,18 @@ import {
   type ProviderModelAvailabilitySnapshot,
 } from '../runtime/CliProviderModelAvailabilityService';
 import {
+  buildExternalCliProviderStatuses,
+  invalidateExternalCliProviderStatusCache,
+  mergeExternalCliProviderStatuses,
+} from '../runtime/externalCliProviderStatus';
+import {
   createDegradedProviderStatus,
   createRuntimeStatusErrorProviderStatus,
   mergeProviderStatusDisplayEvidence,
 } from '../runtime/providerStatusCheckContract';
 import { ClaudeBinaryResolver } from '../team/ClaudeBinaryResolver';
 import { getCliFlavorUiOptions, getConfiguredCliFlavor } from '../team/cliFlavor';
+import { isExternalCliTeamProviderId } from '../team/runtime/externalCli';
 
 import { buildInitialCliInstallationStatus } from './cliInstallerInitialStatus';
 import {
@@ -576,6 +582,7 @@ export class CliInstallerService {
     this.latestStatusSnapshot = null;
     this.runtimeRefresh = 'required';
     ClaudeBinaryResolver.clearCache();
+    invalidateExternalCliProviderStatusCache();
     this.latestProviderSignatures.clear();
     this.modelAvailabilityService.invalidate();
     this.multimodelBridgeService.invalidateProviderStatusHydrations();
@@ -877,6 +884,14 @@ export class CliInstallerService {
         new Error('Provider runtime changed during status check. Refresh to retry.')
       );
     if (generation !== this.statusGatherGeneration) return obsoleteStatus();
+    if (isExternalCliTeamProviderId(providerId)) {
+      const [externalStatus] = await buildExternalCliProviderStatuses([providerId], {
+        force: true,
+      });
+      if (!externalStatus) return null;
+      this.updateLatestProviderStatusIfCurrent(externalStatus, generation);
+      return externalStatus;
+    }
     const passiveRuntime = resolvePassiveProviderRuntime(this.latestStatusSnapshot, providerId);
     if ('errorStatus' in passiveRuntime) {
       return passiveRuntime.errorStatus;
@@ -1175,19 +1190,23 @@ export class CliInstallerService {
       return;
     }
 
-    result.providers = result.providers.map((provider) => ({
-      ...provider,
-      authenticated: false,
-      authMethod: null,
-      verificationState: 'error',
-      modelVerificationState: 'idle',
-      modelCatalogRefreshState: 'error',
-      statusMessage: message,
-      models: [],
-      modelAvailability: [],
-      canLoginFromUi: false,
-      backend: null,
-    }));
+    result.providers = result.providers.map((provider) =>
+      isExternalCliTeamProviderId(provider.providerId)
+        ? provider
+        : {
+            ...provider,
+            authenticated: false,
+            authMethod: null,
+            verificationState: 'error',
+            modelVerificationState: 'idle',
+            modelCatalogRefreshState: 'error',
+            statusMessage: message,
+            models: [],
+            modelAvailability: [],
+            canLoginFromUi: false,
+            backend: null,
+          }
+    );
     result.authLoggedIn = false;
     result.authMethod = null;
   }
@@ -1247,12 +1266,21 @@ export class CliInstallerService {
         }
         this.publishStatusSnapshot(result);
       };
+      const externalStatusesReady = buildExternalCliProviderStatuses([
+        'antigravity',
+        'minimax',
+        'kimi',
+        'cline',
+      ])
+        .then((statuses) => statuses)
+        .catch(() => [] as CliProviderStatus[]);
       const completion = this.multimodelBridgeService
         .getProviderStatuses(binaryPath, (providersSnapshot, updatedProviderId) => {
           applyProviders(providersSnapshot, false, updatedProviderId);
         })
-        .then((providers) => {
-          applyProviders(providers, true);
+        .then(async (providers) => {
+          const externalStatuses = await externalStatusesReady;
+          applyProviders(mergeExternalCliProviderStatuses(providers, externalStatuses), true);
         })
         .catch((error) => {
           if (generation !== this.statusGatherGeneration) {

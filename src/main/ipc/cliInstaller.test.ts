@@ -74,6 +74,10 @@ function createProviderStatus(providerId: CliProviderId): CliProviderStatus {
       codex: 'gpt-5.4',
       gemini: 'gemini-2.5-pro',
       opencode: 'opencode/big-pickle',
+      antigravity: 'gemini-2.5-pro',
+      minimax: 'minimax/MiniMax-M1',
+      kimi: 'kimi-k2-0905',
+      cline: 'anthropic/claude-sonnet-4-5',
     }[providerId] ?? `${providerId}/default`;
 
   return {
