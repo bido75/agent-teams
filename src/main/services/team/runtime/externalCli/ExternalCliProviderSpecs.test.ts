@@ -3,6 +3,12 @@ import * as path from 'path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  buildExternalCliStaticModelCatalog,
+  parseAntigravityModelsOutput,
+  parseKimiProviderListJson,
+  resolveExternalCliModelCatalog,
+} from './ExternalCliModelCatalogSource';
+import {
   EXTERNAL_CLI_PROVIDER_SPECS,
   EXTERNAL_CLI_TEAM_PROVIDER_IDS,
   getExternalCliProviderSpec,
@@ -92,6 +98,73 @@ describe('ExternalCliProviderSpecs', () => {
     expect(getExternalCliProviderSpec('kimi').extraSpawnEnv).toEqual({
       KIMI_CODE_TRUST_WORKSPACE: '1',
     });
+  });
+
+  it('declares a model catalog source for every provider', () => {
+    const sources = new Map<string, string>();
+    for (const spec of listExternalCliProviderSpecs()) {
+      expect(spec.modelCatalogSource === 'runtime' || spec.modelCatalogSource === 'static').toBe(
+        true
+      );
+      sources.set(spec.providerId, spec.modelCatalogSource);
+    }
+    expect(sources.get('antigravity')).toBe('runtime');
+    expect(sources.get('kimi')).toBe('runtime');
+    expect(sources.get('minimax')).toBe('static');
+    expect(sources.get('cline')).toBe('static');
+  });
+});
+
+describe('ExternalCliModelCatalogSource', () => {
+  it('parses agy models TSV output and skips progress lines', () => {
+    const seeds = parseAntigravityModelsOutput(
+      [
+        'Fetching available models...',
+        'gemini-3.8-flash-high\tGemini 3.8 Flash (High)',
+        '',
+        'claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)',
+      ].join('\n')
+    );
+    expect(seeds).toEqual([
+      { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
+      { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Thinking)' },
+    ]);
+  });
+
+  it('parses kimi provider list JSON model keys', () => {
+    const seeds = parseKimiProviderListJson(
+      JSON.stringify({ providers: {}, models: { 'kimi-k2.5': {}, 'kimi-k2-turbo': {} } })
+    );
+    expect(seeds).toEqual([
+      { id: 'kimi-k2.5', label: 'kimi-k2.5' },
+      { id: 'kimi-k2-turbo', label: 'kimi-k2-turbo' },
+    ]);
+    expect(parseKimiProviderListJson('not-json')).toEqual([]);
+    expect(parseKimiProviderListJson('{"providers":{}}')).toEqual([]);
+  });
+
+  it('builds a fresh ready static catalog with the first model as default', () => {
+    const catalog = buildExternalCliStaticModelCatalog('minimax', 1_700_000_000_000);
+    expect(catalog).toMatchObject({
+      schemaVersion: 1,
+      providerId: 'minimax',
+      source: 'static-fallback',
+      status: 'ready',
+      defaultModelId: 'MiniMax-M2',
+      defaultLaunchModel: 'MiniMax-M2',
+    });
+    expect(catalog.models).toHaveLength(2);
+    expect(catalog.models[0]?.isDefault).toBe(true);
+    expect(Date.parse(catalog.staleAt)).toBeGreaterThan(Date.parse(catalog.fetchedAt));
+  });
+
+  it('falls back to the static catalog when the binary is unavailable or runtime parse fails', async () => {
+    const withoutBinary = await resolveExternalCliModelCatalog('antigravity', null);
+    expect(withoutBinary.source).toBe('static-fallback');
+
+    const staticOnly = await resolveExternalCliModelCatalog('minimax', null);
+    expect(staticOnly.source).toBe('static-fallback');
+    expect(staticOnly.providerId).toBe('minimax');
   });
 });
 

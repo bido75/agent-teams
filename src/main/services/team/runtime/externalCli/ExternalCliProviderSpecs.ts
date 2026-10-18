@@ -28,6 +28,7 @@ export interface ExternalCliProviderSpec {
   installHint: string;
   authHint: string;
   mcpInstall: ExternalCliMcpInstallTarget;
+  modelCatalogSource: 'runtime' | 'static';
   extraSpawnEnv?: Readonly<Record<string, string>>;
   buildHeadlessArgs(input: ExternalCliHeadlessTurnInput): string[];
 }
@@ -58,6 +59,7 @@ export const EXTERNAL_CLI_PROVIDER_SPECS: Readonly<
       kind: 'user-file',
       absolutePathSegments: ['.gemini', 'config', 'mcp_config.json'],
     },
+    modelCatalogSource: 'runtime',
     buildHeadlessArgs: ({ prompt, model }) => [
       '-p',
       prompt,
@@ -76,11 +78,12 @@ export const EXTERNAL_CLI_PROVIDER_SPECS: Readonly<
     installHint:
       'Install MiniMax Code: POSIX `curl -fsSL https://filecdn.minimax.chat/public/install.sh | bash`; Windows `irm https://filecdn.minimax.chat/public/install.ps1 | iex`; or `npm i -g @minimax-ai/code`. Then restart the app so PATH changes apply.',
     authHint:
-      'Run `mcode login` (MiniMax account/Token Plan) or configure a BYOK provider with `mcode provider add`.',
+      'Run `mcode login --region global` to sign in with your international MiniMax account (minimax.io), or configure a BYOK provider with `mcode provider add`.',
     mcpInstall: {
       kind: 'project-file',
       relativePath: '.mcp.json',
     },
+    modelCatalogSource: 'static',
     buildHeadlessArgs: ({ prompt, model }) => [
       'exec',
       prompt,
@@ -100,11 +103,13 @@ export const EXTERNAL_CLI_PROVIDER_SPECS: Readonly<
     versionArgs: ['--version'],
     installHint:
       'Install Kimi Code: POSIX `curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash`; or `npm i -g @moonshot-ai/kimi-code`. Then restart the app so PATH changes apply.',
-    authHint: 'Run `kimi auth login` (Moonshot OAuth/API key) before launching teams.',
+    authHint:
+      'Run `kimi` once interactively to sign in with Moonshot, or configure providers via `kimi provider add` / `kimi provider catalog`.',
     mcpInstall: {
       kind: 'project-file',
       relativePath: '.kimi-code/mcp.json',
     },
+    modelCatalogSource: 'runtime',
     extraSpawnEnv: {
       KIMI_CODE_TRUST_WORKSPACE: '1',
     },
@@ -119,11 +124,13 @@ export const EXTERNAL_CLI_PROVIDER_SPECS: Readonly<
     versionArgs: ['version'],
     installHint:
       'Install the Cline CLI: `npm i -g cline`. Then restart the app so PATH changes apply.',
-    authHint: 'Run `cline auth login` or configure a provider API key before launching teams.',
+    authHint:
+      'Run `cline auth` (or `cline auth <provider>`) to authenticate, or pass an API key via `cline --key <api-key>`.',
     mcpInstall: {
       kind: 'env-config-path',
       envVar: 'CLINE_MCP_SETTINGS_PATH',
     },
+    modelCatalogSource: 'static',
     buildHeadlessArgs: ({ prompt }) => ['--json', '--auto-approve', 'true', prompt],
   },
 };

@@ -500,18 +500,23 @@ describe('CliInstallerService', () => {
         resolveOld([createTestProviderStatus('codex', false, null)]);
         const result = await oldResult;
         expect(result.binaryPath).toBe('/mock/old-runtime');
-        expect(result.providers.every((provider) => !provider.capabilities.teamLaunch)).toBe(true);
+        const frontendProviders = result.providers.filter((provider) =>
+          ['anthropic', 'codex', 'opencode'].includes(provider.providerId)
+        );
+        expect(frontendProviders.every((provider) => !provider.capabilities.teamLaunch)).toBe(
+          true
+        );
         expect(
-          result.providers.every((provider) => provider.authMethod !== 'new-runtime-session')
+          frontendProviders.every((provider) => provider.authMethod !== 'new-runtime-session')
         ).toBe(true);
         expect(service.getLatestStatusSnapshot()).toMatchObject({
           binaryPath: '/mock/new-runtime',
-          providers: [
+          providers: expect.arrayContaining([
             expect.objectContaining({
               authMethod: 'new-runtime-session',
               capabilities: expect.objectContaining({ teamLaunch: true }),
             }),
-          ],
+          ]),
         });
       } finally {
         spy.mockRestore();
@@ -639,6 +644,10 @@ describe('CliInstallerService', () => {
         'anthropic',
         'codex',
         'opencode',
+        'antigravity',
+        'minimax',
+        'kimi',
+        'cline',
       ]);
       expect(status.authLoggedIn).toBe(false);
       expect(status.authMethod).toBeNull();

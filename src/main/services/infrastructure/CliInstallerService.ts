@@ -746,7 +746,8 @@ export class CliInstallerService {
   private updateLatestProviderStatus(providerStatus: CliProviderStatus): void {
     if (
       this.latestStatusSnapshot?.flavor === 'agent_teams_orchestrator' &&
-      !isFrontendProvider(providerStatus.providerId)
+      !isFrontendProvider(providerStatus.providerId) &&
+      !isExternalCliTeamProviderId(providerStatus.providerId)
     ) {
       return;
     }
@@ -801,8 +802,7 @@ export class CliInstallerService {
   ): CliProviderStatus | null {
     const snapshot = this.latestStatusSnapshot;
     if (
-      !snapshot ||
-      snapshot.flavor !== 'agent_teams_orchestrator' ||
+      snapshot?.flavor !== 'agent_teams_orchestrator' ||
       snapshot.binaryPath !== binaryPath ||
       snapshot.installedVersion !== installedVersion
     ) {

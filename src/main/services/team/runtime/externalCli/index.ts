@@ -16,6 +16,13 @@ export {
   type ExternalCliTurnExit,
 } from './ExternalCliMemberSupervisor';
 export {
+  buildExternalCliModelCatalog,
+  buildExternalCliStaticModelCatalog,
+  parseAntigravityModelsOutput,
+  parseKimiProviderListJson,
+  resolveExternalCliModelCatalog,
+} from './ExternalCliModelCatalogSource';
+export {
   EXTERNAL_CLI_PROVIDER_SPECS,
   EXTERNAL_CLI_TEAM_PROVIDER_IDS,
   type ExternalCliProviderSpec,

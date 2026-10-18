@@ -10,6 +10,7 @@ import {
   installExternalCliMcpConfig,
   uninstallExternalCliMcpConfigs,
 } from './ExternalCliMcpConfigInstaller';
+import { buildExternalCliStaticModelCatalog } from './ExternalCliModelCatalogSource';
 
 const MCP_SERVER_KEY = 'agent-teams';
 
@@ -205,6 +206,23 @@ describe('buildExternalCliProviderStatus', () => {
     });
     expect(status.capabilities.teamLaunch).toBe(true);
     expect(status.statusMessage).toContain('C:\\bin\\mcode.cmd');
+  });
+
+  it('publishes an attached model catalog and launch model list', () => {
+    const catalog = buildExternalCliStaticModelCatalog('minimax', 1_700_000_000_000);
+    const status = buildExternalCliProviderStatus(
+      'minimax',
+      {
+        ok: true,
+        providerId: 'minimax',
+        binaryPath: 'C:\\bin\\mcode.cmd',
+        versionOutput: '1.2.3',
+      },
+      catalog
+    );
+    expect(status.modelCatalog).toEqual(catalog);
+    expect(status.modelCatalogRefreshState).toBe('ready');
+    expect(status.models).toEqual(['MiniMax-M2', 'MiniMax-M2.1']);
   });
 
   it('reports a missing binary with install and auth hints', () => {

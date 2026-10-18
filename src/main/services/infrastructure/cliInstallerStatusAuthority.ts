@@ -7,16 +7,13 @@ import {
   createRuntimeStatusErrorProviderStatus,
   sanitizeProviderStatusAuthority,
 } from '../runtime/providerStatusCheckContract';
+import { isExternalCliTeamProviderId } from '../team/runtime/externalCli';
 
 import type { CliInstallationStatus, CliProviderId, CliProviderStatus } from '@shared/types';
 
 type CloneInstallationStatus = (status: CliInstallationStatus) => CliInstallationStatus;
 
-export const FRONTEND_PROVIDER_IDS: readonly CliProviderId[] = [
-  'anthropic',
-  'codex',
-  'opencode',
-];
+export const FRONTEND_PROVIDER_IDS: readonly CliProviderId[] = ['anthropic', 'codex', 'opencode'];
 const FRONTEND_PROVIDER_ID_SET = new Set<CliProviderId>(FRONTEND_PROVIDER_IDS);
 
 export function isFrontendProvider(providerId: CliProviderId): boolean {
@@ -39,6 +36,14 @@ export function hasAuthenticatedFrontendProvider(providers: CliProviderStatus[])
 
 export function filterFrontendProviders(providers: CliProviderStatus[]): CliProviderStatus[] {
   return providers.filter((provider) => isFrontendProvider(provider.providerId));
+}
+
+export function isPublishedProvider(providerId: CliProviderId): boolean {
+  return isFrontendProvider(providerId) || isExternalCliTeamProviderId(providerId);
+}
+
+export function filterPublishedProviders(providers: CliProviderStatus[]): CliProviderStatus[] {
+  return providers.filter((provider) => isPublishedProvider(provider.providerId));
 }
 
 export function projectProviderAuthority(

@@ -4,6 +4,7 @@ import {
   getExternalCliProviderSpec,
   isExternalCliTeamProviderId,
   resolveExternalCliBinary,
+  resolveExternalCliModelCatalog,
 } from '@main/services/team/runtime/externalCli';
 import { createDefaultCliExtensionCapabilities } from '@shared/utils/providerExtensionCapabilities';
 
@@ -15,12 +16,16 @@ const STATUS_PROBE_TIMEOUT_MS = 3_000;
 interface CachedResolution {
   at: number;
   resolution: ExternalCliBinaryResolution;
+  catalog: CliProviderStatus['modelCatalog'];
 }
 
 const resolutionCache = new Map<ExternalCliTeamProviderId, CachedResolution>();
 const inFlightResolutions = new Map<
   ExternalCliTeamProviderId,
-  Promise<ExternalCliBinaryResolution>
+  Promise<{
+    resolution: ExternalCliBinaryResolution;
+    catalog: CliProviderStatus['modelCatalog'];
+  }>
 >();
 
 export function invalidateExternalCliProviderStatusCache(): void {
@@ -30,11 +35,14 @@ export function invalidateExternalCliProviderStatusCache(): void {
 export async function resolveExternalCliProviderStatusBinary(
   providerId: ExternalCliTeamProviderId,
   options: { force?: boolean } = {}
-): Promise<ExternalCliBinaryResolution> {
+): Promise<{
+  resolution: ExternalCliBinaryResolution;
+  catalog: CliProviderStatus['modelCatalog'];
+}> {
   if (!options.force) {
     const cached = resolutionCache.get(providerId);
     if (cached && Date.now() - cached.at < RESOLUTION_CACHE_TTL_MS) {
-      return cached.resolution;
+      return { resolution: cached.resolution, catalog: cached.catalog };
     }
   }
   const inFlight = inFlightResolutions.get(providerId);
@@ -45,9 +53,14 @@ export async function resolveExternalCliProviderStatusBinary(
     skipVersionProbe: true,
     timeoutMs: STATUS_PROBE_TIMEOUT_MS,
   })
-    .then((resolution) => {
-      resolutionCache.set(providerId, { at: Date.now(), resolution });
-      return resolution;
+    .then(async (resolution) => {
+      const catalog = resolution.ok
+        ? await resolveExternalCliModelCatalog(providerId, resolution.binaryPath ?? null).catch(
+            () => null
+          )
+        : null;
+      resolutionCache.set(providerId, { at: Date.now(), resolution, catalog });
+      return { resolution, catalog };
     })
     .finally(() => {
       inFlightResolutions.delete(providerId);
@@ -58,7 +71,8 @@ export async function resolveExternalCliProviderStatusBinary(
 
 export function buildExternalCliProviderStatus(
   providerId: CliProviderId,
-  resolution: ExternalCliBinaryResolution
+  resolution: ExternalCliBinaryResolution,
+  modelCatalog: CliProviderStatus['modelCatalog'] = null
 ): CliProviderStatus {
   const spec = getExternalCliProviderSpec(resolution.providerId);
   return {
@@ -75,8 +89,10 @@ export function buildExternalCliProviderStatus(
     detailMessage: resolution.ok
       ? spec.authHint
       : `${resolution.installHint} ${resolution.authHint}`.trim(),
-    models: [],
+    models: modelCatalog?.models.map((model) => model.launchModel) ?? [],
     modelAvailability: [],
+    modelCatalog,
+    modelCatalogRefreshState: modelCatalog ? 'ready' : undefined,
     canLoginFromUi: false,
     capabilities: {
       teamLaunch: resolution.ok,
@@ -94,8 +110,8 @@ export async function buildExternalCliProviderStatusFor(
   if (!isExternalCliTeamProviderId(providerId)) {
     return null;
   }
-  const resolution = await resolveExternalCliProviderStatusBinary(providerId, options);
-  return buildExternalCliProviderStatus(providerId, resolution);
+  const { resolution, catalog } = await resolveExternalCliProviderStatusBinary(providerId, options);
+  return buildExternalCliProviderStatus(providerId, resolution, catalog);
 }
 
 export async function buildExternalCliProviderStatuses(

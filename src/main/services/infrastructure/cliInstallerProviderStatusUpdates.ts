@@ -1,5 +1,7 @@
+import { isExternalCliTeamProviderId } from '../team/runtime/externalCli';
+
 import {
-  filterFrontendProviders,
+  filterPublishedProviders,
   getAuthenticatedFrontendProvider,
   hasAuthenticatedFrontendProvider,
   projectProviderAuthority,
@@ -34,8 +36,10 @@ export function mergeProviderStatusPublication(
         : provider
     );
   }
-  const providers = filterFrontendProviders(merged).map((provider) =>
-    projectProviderAuthority(provider, now)
+  const providers = filterPublishedProviders(merged).map((provider) =>
+    isExternalCliTeamProviderId(provider.providerId)
+      ? provider
+      : projectProviderAuthority(provider, now)
   );
   return {
     providers,
