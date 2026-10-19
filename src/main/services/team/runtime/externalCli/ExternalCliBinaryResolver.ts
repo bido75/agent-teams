@@ -40,29 +40,36 @@ export interface ResolveExternalCliBinaryOptions {
 function getKnownInstallDirCandidates(spec: ExternalCliProviderSpec): string[] {
   const home = os.homedir();
   const localAppData = process.env.LOCALAPPDATA ?? path.join(home, 'AppData', 'Local');
-  const candidates: string[] = [];
+  const dirs: string[] = [];
   if (spec.providerId === 'antigravity') {
-    candidates.push(path.join(home, '.local', 'bin', 'agy'));
-    candidates.push(path.join(localAppData, 'agy', 'bin', 'agy.cmd'));
+    dirs.push(path.join(home, '.local', 'bin'));
+    dirs.push(path.join(localAppData, 'agy', 'bin'));
   }
   if (spec.providerId === 'minimax') {
-    candidates.push(path.join(home, '.minimax-code', 'bin', 'mcode'));
-    candidates.push(path.join(home, '.local', 'bin', 'mcode'));
+    dirs.push(path.join(home, '.minimax-code', 'bin'));
+    dirs.push(path.join(home, '.local', 'bin'));
     if (process.platform === 'win32') {
-      candidates.push(path.join(home, '.minimax-code', 'bin', 'mcode.cmd'));
+      dirs.push(path.join(home, 'AppData', 'Roaming', 'npm'));
     }
   }
   if (spec.providerId === 'kimi') {
-    candidates.push(path.join(home, '.local', 'bin', 'kimi'));
+    dirs.push(path.join(home, '.local', 'bin'));
     if (process.platform === 'win32') {
-      candidates.push(path.join(home, 'AppData', 'Roaming', 'npm', 'kimi.cmd'));
+      dirs.push(path.join(home, 'AppData', 'Roaming', 'npm'));
     }
   }
   if (spec.providerId === 'cline') {
     if (process.platform === 'win32') {
-      candidates.push(path.join(home, 'AppData', 'Roaming', 'npm', 'cline.cmd'));
+      dirs.push(path.join(home, 'AppData', 'Roaming', 'npm'));
     } else {
-      candidates.push(path.join(home, '.local', 'bin', 'cline'));
+      dirs.push(path.join(home, '.local', 'bin'));
+    }
+  }
+  const names = process.platform === 'win32' ? spec.windowsBinaryNames : spec.posixBinaryNames;
+  const candidates: string[] = [];
+  for (const dir of dirs) {
+    for (const name of names) {
+      candidates.push(path.join(dir, name));
     }
   }
   return candidates;
