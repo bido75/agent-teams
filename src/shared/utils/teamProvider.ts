@@ -13,6 +13,14 @@ export const TEAM_PROVIDER_IDS = [
   'cline',
 ] as const;
 
+export const EXTERNAL_CLI_TEAM_PROVIDER_IDS = ['antigravity', 'minimax', 'kimi', 'cline'] as const;
+
+export type ExternalCliTeamProviderId = (typeof EXTERNAL_CLI_TEAM_PROVIDER_IDS)[number];
+
+export function isExternalCliTeamProviderId(value: unknown): value is ExternalCliTeamProviderId {
+  return (EXTERNAL_CLI_TEAM_PROVIDER_IDS as readonly unknown[]).includes(value);
+}
+
 export function isTeamProviderId(value: unknown): value is TeamProviderId {
   return (TEAM_PROVIDER_IDS as readonly unknown[]).includes(value);
 }

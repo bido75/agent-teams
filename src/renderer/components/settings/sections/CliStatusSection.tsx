@@ -40,6 +40,7 @@ import { ProviderRuntimeSettingsDialog } from '@renderer/components/runtime/Prov
 import {
   getProviderTerminalCommand,
   getProviderTerminalLogoutCommand,
+  isRuntimeDrivenProviderLoginSupported,
 } from '@renderer/components/runtime/providerTerminalCommands';
 import { TerminalModal } from '@renderer/components/terminal/TerminalModal';
 import { useCliInstaller } from '@renderer/hooks/useCliInstaller';
@@ -643,12 +644,19 @@ export const CliStatusSection = (): React.JSX.Element | null => {
                                     shouldShowProviderConnectAction(provider) ? (
                                     <button
                                       type="button"
-                                      onClick={() =>
+                                      onClick={() => {
+                                        if (
+                                          !isRuntimeDrivenProviderLoginSupported(
+                                            provider.providerId
+                                          )
+                                        ) {
+                                          return;
+                                        }
                                         setProviderTerminal({
                                           providerId: provider.providerId,
                                           action: 'login',
-                                        })
-                                      }
+                                        });
+                                      }}
                                       disabled={!effectiveCliStatus.binaryPath}
                                       className="flex items-center gap-1 rounded-md border px-2 py-[3px] text-[10px] font-medium transition-colors hover:bg-white/5 disabled:opacity-50"
                                       style={{
@@ -693,9 +701,12 @@ export const CliStatusSection = (): React.JSX.Element | null => {
                   onInstallCodexRuntime={() => installCodexRuntime()}
                   onSelectBackend={handleRuntimeBackendChange}
                   onRefreshProvider={handleProviderRefresh}
-                  onRequestLogin={(providerId) =>
-                    setProviderTerminal({ providerId, action: 'login' })
-                  }
+                  onRequestLogin={(providerId) => {
+                    if (!isRuntimeDrivenProviderLoginSupported(providerId)) {
+                      return;
+                    }
+                    setProviderTerminal({ providerId, action: 'login' });
+                  }}
                 />
               </div>
             ) : (
@@ -863,7 +874,7 @@ export const CliStatusSection = (): React.JSX.Element | null => {
           </div>
         )}
       </div>
-      {providerTerminal && cliStatus?.binaryPath && (
+      {providerTerminal && cliStatus?.binaryPath && providerTerminalCommand && (
         <TerminalModal
           title={`${getRuntimeDisplayName(cliStatus, multimodelEnabled)} ${
             providerTerminal.action === 'login'

@@ -66,6 +66,7 @@ import {
   getProviderTerminalCommand,
   getProviderTerminalCommandById,
   getProviderTerminalLogoutCommand,
+  isRuntimeDrivenProviderLoginSupported,
 } from '@renderer/components/runtime/providerTerminalCommands';
 import { useCliInstaller } from '@renderer/hooks/useCliInstaller';
 import {
@@ -1899,11 +1900,17 @@ export const CliStatusBanner = ({
   ]);
 
   const handleProviderLogin = useCallback((providerId: CliProviderId) => {
+    if (!isRuntimeDrivenProviderLoginSupported(providerId)) {
+      return;
+    }
     setProviderTerminal({ providerId, action: 'login' });
   }, []);
 
   const handleProviderLogout = useCallback(
     (providerId: CliProviderId) => {
+      if (!isRuntimeDrivenProviderLoginSupported(providerId)) {
+        return;
+      }
       void (async () => {
         const provider =
           effectiveCliStatus?.providers.find((entry) => entry.providerId === providerId) ?? null;
@@ -2137,11 +2144,16 @@ export const CliStatusBanner = ({
               onInstallCodexRuntime={() => installCodexRuntime()}
               onSelectBackend={handleProviderBackendChange}
               onRefreshProvider={handleProviderRefresh}
-              onRequestLogin={(providerId) => setProviderTerminal({ providerId, action: 'login' })}
+              onRequestLogin={(providerId) => {
+                if (!isRuntimeDrivenProviderLoginSupported(providerId)) {
+                  return;
+                }
+                setProviderTerminal({ providerId, action: 'login' });
+              }}
             />
           </Suspense>
         )}
-        {providerTerminal && renderCliStatus.binaryPath && (
+        {providerTerminal && renderCliStatus.binaryPath && providerTerminalCommand && (
           <Suspense fallback={null}>
             <TerminalModal
               title={`${getHumanRuntimeDisplayName(renderCliStatus, multimodelEnabled)} ${

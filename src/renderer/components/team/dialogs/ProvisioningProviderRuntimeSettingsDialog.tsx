@@ -4,6 +4,7 @@ import { ProviderRuntimeSettingsDialog } from '@renderer/components/runtime/Prov
 import {
   getProviderTerminalCommand,
   getProviderTerminalLogoutCommand,
+  isRuntimeDrivenProviderLoginSupported,
 } from '@renderer/components/runtime/providerTerminalCommands';
 import { TerminalModal } from '@renderer/components/terminal/TerminalModal';
 import { useStore } from '@renderer/store';
@@ -184,9 +185,14 @@ export const ProvisioningProviderRuntimeSettingsDialog = ({
         onInstallCodexRuntime={() => installCodexRuntime()}
         onSelectBackend={handleProviderBackendChange}
         onRefreshProvider={handleProviderRefresh}
-        onRequestLogin={(providerId) => setProviderTerminal({ providerId, action: 'login' })}
+        onRequestLogin={(providerId) => {
+          if (!isRuntimeDrivenProviderLoginSupported(providerId)) {
+            return;
+          }
+          setProviderTerminal({ providerId, action: 'login' });
+        }}
       />
-      {providerTerminal && cliStatus?.binaryPath && (
+      {providerTerminal && cliStatus?.binaryPath && providerTerminalCommand && (
         <TerminalModal
           title={`${getRuntimeDisplayName(cliStatus, multimodelEnabled)} ${
             providerTerminal.action === 'login' ? 'Login' : 'Logout'

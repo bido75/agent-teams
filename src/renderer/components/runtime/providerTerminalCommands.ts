@@ -1,3 +1,5 @@
+import { isExternalCliTeamProviderId } from '@shared/utils/teamProvider';
+
 import type { CliProviderId, CliProviderStatus } from '@shared/types';
 
 export interface ProviderTerminalCommand {
@@ -5,16 +7,25 @@ export interface ProviderTerminalCommand {
   env?: Record<string, string>;
 }
 
+export function isRuntimeDrivenProviderLoginSupported(providerId: CliProviderId): boolean {
+  return !isExternalCliTeamProviderId(providerId);
+}
+
 export function getProviderTerminalCommandById(
   providerId: CliProviderId,
   action: 'login' | 'logout'
-): ProviderTerminalCommand {
+): ProviderTerminalCommand | null {
+  if (!isRuntimeDrivenProviderLoginSupported(providerId)) {
+    return null;
+  }
   return {
     args: ['auth', action, '--provider', providerId],
   };
 }
 
-export function getProviderTerminalCommand(provider: CliProviderStatus): ProviderTerminalCommand {
+export function getProviderTerminalCommand(
+  provider: CliProviderStatus
+): ProviderTerminalCommand | null {
   if (provider.providerId === 'gemini') {
     return {
       args: ['login'],
@@ -39,7 +50,7 @@ export function getProviderTerminalCommand(provider: CliProviderStatus): Provide
 
 export function getProviderTerminalLogoutCommand(
   provider: CliProviderStatus
-): ProviderTerminalCommand {
+): ProviderTerminalCommand | null {
   if (provider.providerId === 'gemini') {
     return {
       args: ['logout'],
