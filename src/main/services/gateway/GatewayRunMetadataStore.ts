@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 
 import { atomicWriteAsync } from '@main/utils/atomicWrite';
+import { isExternalCliTeamProviderId } from '@shared/utils/teamProvider';
 
 import type { TokenUsageRunDto } from '@features/token-usage/contracts';
 import type { TeamProviderId } from '@shared/types';
@@ -137,7 +138,9 @@ export class GatewayRunMetadataStore {
             agentName: snapshot.memberName,
             agentId: `${snapshot.teamName}:${snapshot.memberName}`,
             providerId: snapshot.providerId,
-            runtimeKind: snapshot.providerId,
+            runtimeKind: isExternalCliTeamProviderId(snapshot.providerId)
+              ? 'unknown'
+              : snapshot.providerId,
             gatewayUsageRef: snapshot.gatewayUsageRef,
             startedAt: snapshot.startedAt,
             endedAt: snapshot.endedAt,
