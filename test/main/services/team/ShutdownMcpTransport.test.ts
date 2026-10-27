@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  configureDesktopMcpEnvironment,
   createDesktopExternalAgentConnection,
   getDesktopMcpChildEnvironment,
   isDesktopMcpEnvironmentBound,
@@ -17,7 +18,10 @@ import {
   AgentTeamsMcpHttpServer,
   agentTeamsMcpHttpServer as server,
 } from '@main/services/team/AgentTeamsMcpHttpServer';
-import { OpenCodeBridgeCommandClient } from '@main/services/team/opencode/bridge/OpenCodeBridgeCommandClient';
+import {
+  OpenCodeBridgeCommandClient,
+  type OpenCodeBridgeProcessRunInput,
+} from '@main/services/team/opencode/bridge/OpenCodeBridgeCommandClient';
 import { buildOpenCodeAppScopedMcpUrl } from '@main/services/team/opencode/bridge/OpenCodeMcpBridgeEnv';
 import {
   composeExternalAgentConnection,
@@ -96,8 +100,20 @@ const handle: NonNullable<ReturnType<typeof server.getCurrentHandle>> = {
   },
 };
 function bridgeResolver(env: Record<string, string>, overrides: Record<string, unknown> = {}) {
-  const node = sourceNode('resolveBridgeCommandEnv') as ts.VariableDeclaration;
-  return compileExpression(node.initializer!.getText(mainSource), {
+  const node = sourceNode('bridgeClient') as ts.VariableDeclaration;
+  const constructor = node.initializer;
+  if (!constructor || !ts.isNewExpression(constructor))
+    throw new Error('Bridge client constructor missing');
+  const options = constructor.arguments?.[0];
+  if (!options || !ts.isObjectLiteralExpression(options))
+    throw new Error('Bridge client options missing');
+  const provider = options.properties.find(
+    (property): property is ts.PropertyAssignment =>
+      ts.isPropertyAssignment(property) && property.name.getText(mainSource) === 'envProvider'
+  );
+  if (!provider || !ts.isArrowFunction(provider.initializer))
+    throw new Error('Bridge client environment provider missing');
+  return compileExpression(provider.initializer.getText(mainSource), {
     bridgeEnv: env,
     getTeamControlApiBaseUrl: () => 'http://127.0.0.1:41000',
     useHttpMcpBridge: true,
@@ -115,6 +131,106 @@ function bridgeResolver(env: Record<string, string>, overrides: Record<string, u
 }
 
 describe('shutdown MCP transport authority', () => {
+  it.each([false, true])(
+    'dispatches startup retirement without control, but refuses launch (HTTP=%s)',
+    async (useHttpMcpBridge) => {
+      const directory = await mkdtemp(join(tmpdir(), 'startup-no-control-'));
+      const unavailable = vi.fn(() => {
+        throw new Error('Desktop MCP control context is unavailable');
+      });
+      const revoke = configureDesktopMcpEnvironment(unavailable, () => false);
+      const env = {
+        ...hostEnv(),
+        CLAUDE_MULTIMODEL_AGENT_TEAMS_MCP_URL: 'http://127.0.0.1:49999/mcp',
+        CLAUDE_MULTIMODEL_AGENT_TEAMS_MCP_URL_HASH: 'stale-http-hash',
+        AGENT_TEAMS_BOUND_CONTROL_URL: 'http://127.0.0.1:49999',
+        AGENT_TEAMS_BOUND_CONTEXT_JSON: '{"stale":true}',
+        CLAUDE_MULTIMODEL_AGENT_TEAMS_MCP_ENV_JSON: JSON.stringify({
+          ...JSON.parse(hostEnv().CLAUDE_MULTIMODEL_AGENT_TEAMS_MCP_ENV_JSON),
+          AGENT_TEAMS_BOUND_CONTROL_URL: 'http://127.0.0.1:49999',
+          AGENT_TEAMS_BOUND_CONTEXT_JSON: '{"stale":true}',
+        }),
+      };
+      const resolveEnv = bridgeResolver(env, {
+        useHttpMcpBridge,
+        getTeamControlApiBaseUrl: () => null,
+        refreshDesktopBridgeEnvironment,
+      }) as NonNullable<
+        ConstructorParameters<typeof OpenCodeBridgeCommandClient>[0]['envProvider']
+      >;
+      const run = vi.fn(async (_input: OpenCodeBridgeProcessRunInput) => ({
+        stdout: JSON.stringify({
+          ok: true,
+          schemaVersion: 1,
+          requestId: 'cleanup-test',
+          command: 'opencode.cleanupStartupHosts',
+          completedAt: '2026-10-11T00:00:00.000Z',
+          durationMs: 1,
+          runtime: {
+            providerId: 'opencode',
+            binaryPath: '/sandbox/opencode',
+            binaryFingerprint: 'test-bin',
+            version: '1.0.0',
+            capabilitySnapshotId: 'test-cap',
+          },
+          diagnostics: [],
+          data: {
+            cleaned: 0,
+            remaining: 0,
+            hosts: [],
+            diagnostics: [],
+            startupCleanup: { completion: 'drained', coverage: 'partial', survivingPids: [] },
+          },
+        }),
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+      }));
+      const client = new OpenCodeBridgeCommandClient({
+        binaryPath: '/sandbox/cli',
+        tempDirectory: directory,
+        envProvider: resolveEnv,
+        requestIdFactory: () => 'cleanup-test',
+        processRunner: { run },
+      });
+      try {
+        expect(
+          (
+            await client.execute(
+              'opencode.cleanupStartupHosts',
+              {},
+              { cwd: directory, timeoutMs: 100 }
+            )
+          ).ok
+        ).toBe(true);
+        expect(run).toHaveBeenCalledTimes(1);
+        expect(unavailable).not.toHaveBeenCalled();
+        const cleanupEnv = run.mock.calls[0][0].env;
+        expect(cleanupEnv.CLAUDE_MULTIMODEL_AGENT_TEAMS_MCP_URL).toBeUndefined();
+        expect(cleanupEnv.CLAUDE_MULTIMODEL_AGENT_TEAMS_MCP_URL_HASH).toBeUndefined();
+        expect(cleanupEnv.AGENT_TEAMS_BOUND_CONTROL_URL).toBeUndefined();
+        expect(cleanupEnv.AGENT_TEAMS_BOUND_CONTEXT_JSON).toBeUndefined();
+        expect(
+          JSON.parse(cleanupEnv.CLAUDE_MULTIMODEL_AGENT_TEAMS_MCP_ENV_JSON!)
+        ).not.toHaveProperty('AGENT_TEAMS_BOUND_CONTROL_URL');
+        expect(
+          JSON.parse(cleanupEnv.CLAUDE_MULTIMODEL_AGENT_TEAMS_MCP_ENV_JSON!)
+        ).not.toHaveProperty('AGENT_TEAMS_BOUND_CONTEXT_JSON');
+        await expect(
+          client.execute('opencode.launchTeam', {}, { cwd: directory, timeoutMs: 100 })
+        ).rejects.toThrow(
+          useHttpMcpBridge
+            ? 'Desktop MCP control server is not ready'
+            : 'Desktop MCP control context is unavailable'
+        );
+        expect(run).toHaveBeenCalledTimes(1);
+      } finally {
+        revoke();
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
   it('drains admitted mutations and tears down transport when native run shutdown fails', async () => {
     const connection = composeExternalAgentConnection({
       appInstanceId: 'sandbox-native-stop-failure',
@@ -220,6 +336,7 @@ describe('shutdown MCP transport authority', () => {
       pendingConsumers.push(resolveEnv());
     });
     let connection: ReturnType<typeof createDesktopExternalAgentConnection> | undefined;
+    const gatewayLaunchRuntime = {};
     const initializeBoundary = compileExpression(
       `async () => { let externalAgentConnection = null, memberWorkSyncFeature = null; ${boundaries.map((node) => node.getText(mainSource)).join('\n')} }`,
       {
@@ -238,6 +355,7 @@ describe('shutdown MCP transport authority', () => {
           return { ...connection, start: () => connection!.retryConnection() };
         },
         teamDataService: {},
+        gatewayLaunchRuntime,
         cliInstallerService: { getProviderStatus: vi.fn() },
         codexAccountFeature: undefined,
         forwardTeamChangeToRendererAndHttp: vi.fn(),
@@ -258,7 +376,11 @@ describe('shutdown MCP transport authority', () => {
         },
         handleModeSwitch: vi.fn(),
         startupStage: (operation: () => unknown) => operation(),
-        createOpenCodeRuntimeAdapterRegistry: async () => {
+        createOpenCodeRuntimeAdapterRegistry: async (
+          _publish: unknown,
+          gatewayRuntime: unknown
+        ) => {
+          expect(gatewayRuntime).toBe(gatewayLaunchRuntime);
           // An early env request must fail without touching the unbound supervisor.
           await expect(resolveEnv()).rejects.toThrow('Desktop MCP control server is not ready');
           expect(start).not.toHaveBeenCalled();
@@ -352,10 +474,12 @@ describe('shutdown MCP transport authority', () => {
     const stopStartupAdmission = vi.fn();
     const disposeTokenUsage = vi.fn();
     const prepareShutdownCleanup = vi.fn();
+    const drainCatalog = vi.fn(async () => {});
     const closeAdmission = vi.fn(() => {
       expect(prepareShutdownCleanup).toHaveBeenCalledExactlyOnceWith();
     });
     const noOp = vi.fn();
+    const stopContinuityScan = vi.fn();
     const teardown = vi.spyOn(server, 'stop').mockImplementation(() => {
       // Revocation must already hold on entry, even when server.stop is slow.
       expect(server.appContext.read(getClaudeBasePath())).toBeNull();
@@ -367,6 +491,7 @@ describe('shutdown MCP transport authority', () => {
       shutdownPromise: null,
       stopAdmittingOpenCodeStartupCleanup: stopStartupAdmission,
       openCodeLifecycleBridge: { prepareShutdownCleanup },
+      runtimeProviderManagementFeature: { shutdown: drainCatalog },
       externalAgentConnection: {
         closeAdmission,
         shutdown: async () => {
@@ -382,11 +507,13 @@ describe('shutdown MCP transport authority', () => {
       runShutdownStep: async (_name: string, step: () => unknown) => {
         // Polling must stop before the first async cleanup can yield, and stay stopped.
         expect(disposeTokenUsage).toHaveBeenCalledExactlyOnceWith();
+        expect(stopContinuityScan).toHaveBeenCalledExactlyOnceWith();
         return await step();
       },
       clearStartupTimers: noOp,
       clearInboxNotifyTimers: noOp,
       rendererRecoveryController: null,
+      openCodePromptDeliveryContinuityScan: { stop: stopContinuityScan },
       stopPeriodicOpenCodeHostStartupLockPurge: null,
       teamRuntimeRecoveryFeature: null,
       teamProvisioningService: { setRuntimeRecoveryFailureObserver: noOp, stopAllTeams: stop },
@@ -410,6 +537,10 @@ describe('shutdown MCP transport authority', () => {
       await expect(shutdown()).rejects.toBe(finished);
       expect(stopStartupAdmission).toHaveBeenCalledExactlyOnceWith();
       expect(closeAdmission).toHaveBeenCalledExactlyOnceWith();
+      expect(drainCatalog).toHaveBeenCalledExactlyOnceWith();
+      expect(drainCatalog.mock.invocationCallOrder[0]).toBeLessThan(
+        closeAdmission.mock.invocationCallOrder[0]
+      );
       expect(prepareShutdownCleanup.mock.invocationCallOrder[0]).toBeLessThan(
         closeAdmission.mock.invocationCallOrder[0]
       );

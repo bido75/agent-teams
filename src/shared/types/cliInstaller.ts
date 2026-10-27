@@ -1,3 +1,5 @@
+import type { OpenCodeRuntimeInstallOptions } from '@features/opencode-runtime-installer/contracts';
+export type { OpenCodeRuntimeInstallOptions } from '@features/opencode-runtime-installer/contracts';
 /**
  * CLI Installer types — shared between main, preload, and renderer processes.
  *
@@ -305,6 +307,8 @@ export interface CliProviderStatus {
   models: string[];
   /** Runtime model-list default, retained separately from catalog fallbacks. */
   defaultModel?: string | null;
+  /** Current runtime-resolved inherited team model; never retained as stale evidence. */
+  effectiveDefaultModel?: string | null;
   modelCatalog?: CliProviderModelCatalog | null;
   modelCatalogRefreshState?: 'idle' | 'loading' | 'ready' | 'error';
   modelAvailability?: CliProviderModelAvailability[];
@@ -452,7 +456,17 @@ export interface CliInstallerAPI {
 // OpenCode Runtime Installer
 // =============================================================================
 
-export type OpenCodeRuntimeSource = 'app-managed' | 'path' | 'missing';
+/** `override` is a binary selected through the OpenCode binary path environment variable. */
+export type OpenCodeRuntimeSource = 'app-managed' | 'override' | 'path' | 'missing';
+
+/** A binary override the app does not launch, and the reason it falls back. */
+export interface OpenCodeRuntimeIgnoredOverride {
+  binaryPath: string;
+  envName: string;
+  /** Version reported by the binary, or null when it could not be read. */
+  version: string | null;
+  reason: string;
+}
 
 export type OpenCodeRuntimeInstallerState =
   | 'idle'
@@ -471,6 +485,8 @@ export interface OpenCodeRuntimeInstallProgress {
 }
 
 export interface OpenCodeRuntimeStatus {
+  /** Exact newest V2 qualified by the pinned runtime for this native platform. */
+  compatibleV2Version?: string | null;
   installed: boolean;
   binaryPath?: string;
   version?: string;
@@ -481,11 +497,16 @@ export interface OpenCodeRuntimeStatus {
   progress?: OpenCodeRuntimeInstallProgress;
   error?: string;
   diagnostics?: RuntimeProviderManagementErrorDiagnosticsDto;
+  /** Set when an override exists but this status describes the fallback binary. */
+  ignoredOverride?: OpenCodeRuntimeIgnoredOverride;
 }
 
 export interface OpenCodeRuntimeAPI {
+  /** Native target supplied by preload; optional only for older API/test adapters. */
+  readonly platform?: string;
+  readonly arch?: string;
   getStatus: () => Promise<OpenCodeRuntimeStatus>;
-  install: () => Promise<OpenCodeRuntimeStatus>;
+  install: (options?: OpenCodeRuntimeInstallOptions) => Promise<OpenCodeRuntimeStatus>;
   invalidateStatus: () => Promise<void>;
   onProgress: (cb: (event: unknown, data: OpenCodeRuntimeStatus) => void) => () => void;
 }

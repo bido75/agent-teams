@@ -2,12 +2,17 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { isDeepStrictEqual } from 'node:util';
 import { clickControl, correlateReport } from './catalog.mjs';
 import {
   runtimeProvenance,
   packagedEnvironment,
   probeOrchestratorVersion,
   installerPublicationSnapshot,
+  packagedRefreshControlState,
+  packagedSettingsPreparationState,
+  packagedSettingsRequestObservation,
+  waitForPackagedRefreshPreparation,
 } from './packaged.mjs';
 
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -335,6 +340,66 @@ export function refreshSettled(observation, current) {
   );
 }
 
+export function assertSettledDirectoryPage(payload) {
+  assert(
+    Array.isArray(payload?.diagnostics) && payload.diagnostics.length === 0,
+    'Pending/degraded provider directory does not qualify'
+  );
+}
+
+// Readiness is a separate main API precondition, never measured UI evidence.
+export async function waitForSettledDirectory(load, timeoutMs = 120000) {
+  const deadline = Date.now() + timeoutMs;
+  let attempt = 0;
+  for (;;) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const response = await load(remaining, attempt++);
+    assert.equal(response?.schemaVersion, 1);
+    assert.equal(response.runtimeId, 'opencode');
+    assert(!response.error, 'Provider directory readiness failed');
+    assert.equal(response.directory?.runtimeId, 'opencode');
+    const diagnostics = response.directory.diagnostics;
+    assert(Array.isArray(diagnostics), 'Missing directory readiness diagnostics');
+    if (!diagnostics.length) {
+      assertSettledDirectoryPage(response.directory);
+      assert(Date.now() < deadline, 'Provider directory did not settle within bootstrap budget');
+      return response;
+    }
+    assert(
+      diagnostics.every((item) => item === 'capabilities_pending'),
+      'Provider directory readiness failed'
+    );
+    await pause(Math.min(250, Math.max(0, deadline - Date.now())));
+  }
+  throw new Error('Provider directory did not settle within bootstrap budget');
+}
+
+/**
+ * The Providers & plans grid refreshes its first directory page beside the connected-model
+ * catalog on an OpenCode re-check (#991). The main process joins that identical, concurrent
+ * refresh into the catalog's runtime call, so both receive the same response. Count that
+ * one joined read once: an identical request, overlapping in time, with an identical
+ * response (including fetchedAt). Any other extra directory read, including a second
+ * joined one or a separate runtime call, still fails the page walk.
+ */
+export function separateJoinedDirectoryRead(directory) {
+  const joined = directory.filter((record, index) =>
+    directory
+      .slice(0, index)
+      .some(
+        (earlier) =>
+          (record.input.cursor ?? null) === null &&
+          isDeepStrictEqual(earlier.input, record.input) &&
+          record.startedAt <= earlier.completedAt &&
+          earlier.startedAt <= record.completedAt &&
+          isDeepStrictEqual(earlier.response, record.response)
+      )
+  );
+  if (joined.length !== 1) return { walk: directory, sharedReads: 0 };
+  return { walk: directory.filter((record) => record !== joined[0]), sharedReads: 1 };
+}
+
 export async function qualifyUIRefresh(records, completed) {
   assert.equal(completed?.state, 'ready');
   assert(!completed.diagnostics?.message);
@@ -372,12 +437,14 @@ export async function qualifyUIRefresh(records, completed) {
   assert(directory.every((r) => r.input.summary === true && r.input.filter === 'all'));
   for (const record of directory) {
     const payload = record.response.directory;
+    assertSettledDirectoryPage(payload);
     assert(
       Number.isInteger(payload?.totalCount) && Number.isInteger(payload?.returnedCount),
       'Missing UI directory completeness metadata'
     );
   }
-  const entries = await pages(directory, 'directory');
+  const { walk, sharedReads } = separateJoinedDirectoryRead(directory);
+  const entries = await pages(walk, 'directory');
   const sources = [
     ...new Set(
       entries
@@ -429,7 +496,32 @@ export async function qualifyUIRefresh(records, completed) {
     modelIds,
     'Rendered UI differs from measured completions'
   );
-  return { sources, modelIds };
+  return { sources, modelIds, sharedDirectoryReads: sharedReads };
+}
+
+// These are separate network reads, not two views of one refresh response.
+// UI correctness is established by qualifyUIRefresh against its own completions.
+export function compareCatalogSnapshots(uiInventory, freshModelIds) {
+  const ui = new Set(uiInventory.modelIds);
+  const fresh = new Set(freshModelIds);
+  for (const source of uiInventory.sources) {
+    const prefix = `${source}/`;
+    assert(
+      ![...ui].some((id) => id.startsWith(prefix)) ||
+        [...fresh].some((id) => id.startsWith(prefix)),
+      `Fresh ${source} model inventory unexpectedly empty after a populated UI snapshot`
+    );
+  }
+  const removedSinceUI = [...ui].filter((id) => !fresh.has(id)).sort();
+  const addedSinceUI = [...fresh].filter((id) => !ui.has(id)).sort();
+  return {
+    comparison: 'independent-requests',
+    changed: removedSinceUI.length > 0 || addedSinceUI.length > 0,
+    uiModelCount: ui.size,
+    freshModelCount: fresh.size,
+    removedSinceUI,
+    addedSinceUI,
+  };
 }
 
 export function settingsRefreshSettled(observation, now, quietMs = 500) {
@@ -466,6 +558,71 @@ export function settingsRefreshSettled(observation, now, quietMs = 500) {
             Array.isArray(record.response.models.models))
     )
   );
+}
+
+export function settingsRefreshFailure(observation) {
+  for (const [recordIndex, record] of observation.records.entries()) {
+    // The observer is cleared immediately before the real settings click. Only
+    // that explicit OpenCode directory refresh can establish this failure.
+    if (
+      record.method !== 'loadProviderDirectory' ||
+      record.input?.runtimeId !== 'opencode' ||
+      record.input.refresh !== true ||
+      record.input.summary === true ||
+      !Number.isFinite(record.completedAt)
+    )
+      continue;
+    let category, cause;
+    const diagnostics = record.response?.directory?.diagnostics;
+    if (record.error) category = cause = 'transport-error';
+    else if (record.response?.error) category = cause = 'runtime-error';
+    else if (
+      record.response?.runtimeId === 'opencode' &&
+      record.response.directory?.runtimeId === 'opencode' &&
+      Array.isArray(diagnostics) &&
+      diagnostics.length
+    ) {
+      category = 'native-diagnostics';
+      // Classify bounded text locally. Never put native messages, paths,
+      // credentials or arbitrary error strings into the CI summary.
+      const messages = diagnostics
+        .slice(0, 32)
+        .map((item) => (typeof item === 'string' ? item : item?.message))
+        .filter((item) => typeof item === 'string')
+        .map((item) => item.slice(0, 4096));
+      cause = messages.some((message) => /inventory probe timed out/i.test(message))
+        ? 'inventory-timeout'
+        : messages.some((message) => /query OpenCode providers:.*timed out/i.test(message))
+          ? 'providers-timeout'
+          : 'native-diagnostics';
+    }
+    if (category)
+      return {
+        phase: 'settings-refresh',
+        category,
+        cause,
+        recordIndex,
+        startedAt: Number.isFinite(record.startedAt) ? record.startedAt : null,
+        completedAt: record.completedAt,
+        diagnosticsCount: Array.isArray(diagnostics) ? diagnostics.length : 0,
+      };
+  }
+  return null;
+}
+
+export function settingsRefreshFailureSummary(failure) {
+  const causes = {
+    'transport-error': ['transport-error'],
+    'runtime-error': ['runtime-error'],
+    'native-diagnostics': ['inventory-timeout', 'providers-timeout', 'native-diagnostics'],
+  };
+  if (
+    failure?.phase !== 'settings-refresh' ||
+    !Object.hasOwn(causes, failure.category) ||
+    !causes[failure.category].includes(failure.cause)
+  )
+    return null;
+  return { phase: 'settings-refresh', category: failure.category, cause: failure.cause };
 }
 
 export function qualifySettings(response) {
@@ -676,18 +833,31 @@ export async function verifyPackaged({
     );
     evidence.summaryQualification = qualifySummary(provider);
 
-    // Wait for bootstrap catalog to settle before starting the measured UI refresh.
-    let before;
-    for (let i = 0; i < 240; i++) {
-      before = await evaluate(catalogState);
-      if (before && before.state !== 'loading') break;
-      await pause(500);
-    }
-    assert(
-      before && before.state !== 'loading',
-      'Real dashboard catalog props unavailable/unsettled'
+    // The UI can be ready while its source directory still reports capabilities_pending.
+    // Share the existing bootstrap-settle budget with an independent readiness read.
+    const bootstrapDeadline = Date.now() + 120000;
+    await waitForSettledDirectory(
+      (remaining, attempt) =>
+        probe(
+          `directoryReady:${attempt}`,
+          'window.electronAPI.runtimeProviderManagement.loadProviderDirectory({runtimeId:"opencode",projectPath:null,summary:true,filter:"all",limit:100,cursor:null,refresh:true})',
+          remaining
+        ),
+      bootstrapDeadline - Date.now()
     );
-    evidence.ui = { before, startedAt: new Date().toISOString(), transitions: [] };
+    // The preparation gate subsumes the warm-start catalog/refresh-control polling:
+    // it rejects disabled/hidden/zero-size/disconnected controls and loading/empty
+    // catalogs with a bounded budget and a recorded reason.
+    const preparation = await waitForPackagedRefreshPreparation(() =>
+      evaluate(`({catalog: ${catalogState}, control:
+        (${packagedRefreshControlState.toString()})(${refreshControl})})`)
+    );
+    evidence.ui = { before: preparation.catalog, preparation, transitions: [] };
+    evidence.ui.startedAt = new Date().toISOString();
+    assert(
+      preparation.ready,
+      `Dashboard refresh preparation unavailable: ${preparation.lastReason}`
+    );
     await observe('globalThis.__packagedCatalogObservation.active = true');
     try {
       await clickControl(evaluate, send, refreshControl);
@@ -714,6 +884,12 @@ export async function verifyPackaged({
       assert(completed?.state === 'ready', 'UI did not complete a successful catalog refresh');
       assert(!completed.diagnostics?.message, 'UI catalog diagnostics fail qualification');
       evidence.ui.inventory = await qualifyUIRefresh(observation.records, completed);
+      // The re-check must refresh the Providers & plans grid too, through the shared read.
+      assert.equal(
+        evidence.ui.inventory.sharedDirectoryReads,
+        1,
+        'Providers & plans grid did not refresh with the catalog'
+      );
       evidence.qualification = evidence.ui.inventory.modelIds.length
         ? 'provider-inventory'
         : 'transport-only';
@@ -724,7 +900,7 @@ export async function verifyPackaged({
 
     // Separate fresh main API attempts corroborate source/model payloads. Never injected
     // into UI state or claimed to carry the UI attempt's report IDs.
-    const entries = await collectPages((cursor, page) => {
+    const entries = await collectPages(async (cursor, page) => {
       const input = {
         runtimeId: 'opencode',
         projectPath: null,
@@ -734,10 +910,12 @@ export async function verifyPackaged({
         refresh: true,
         cursor,
       };
-      return probe(
+      const response = await probe(
         `directory:${page}`,
         `window.electronAPI.runtimeProviderManagement.loadProviderDirectory(${JSON.stringify(input)})`
       );
+      assertSettledDirectoryPage(response.directory);
+      return response;
     }, 'directory');
     const sources = entries
       .filter(
@@ -786,10 +964,9 @@ export async function verifyPackaged({
         );
       }
     }
-    assert.deepEqual(
-      evidence.ui.inventory.modelIds,
-      [...new Set(freshModelIds)].sort(),
-      'Completed UI model inventory differs from the fresh main API snapshot'
+    evidence.catalogSnapshotComparison = compareCatalogSnapshots(
+      evidence.ui.inventory,
+      freshModelIds
     );
     assert.equal(
       await evaluate(
@@ -817,24 +994,21 @@ export async function verifyPackaged({
       send,
       `document.querySelector('[data-testid="runtime-manage-opencode"]')`
     );
-    let settingsRendered = false;
-    for (let attempt = 0; attempt < 360; attempt++) {
-      settingsRendered =
-        await evaluate(`Boolean(document.querySelector('[role="dialog"] [data-testid="runtime-provider-catalog-list"]'))
-        && !document.querySelector('[role="dialog"] [data-testid="runtime-provider-loading-skeleton"]')`);
-      const requests = await observe('globalThis.__packagedCatalogObservation');
-      settingsRendered =
-        settingsRendered &&
-        !requests.overflow &&
-        requests.records.length > 0 &&
-        requests.records.every(
-          (record) =>
-            record.completedAt && record.response && !record.error && !record.response.error
-        );
-      if (settingsRendered) break;
-      await pause(250);
-    }
-    assert(settingsRendered, 'Provider settings initial load did not finish');
+    const settingsPreparation = await waitForPackagedRefreshPreparation(
+      async () => {
+        const sample = await evaluate(`(${packagedSettingsPreparationState.toString()})(document,
+        ${packagedRefreshControlState.toString()})`);
+        const requests = await observe('globalThis.__packagedCatalogObservation');
+        const observation = packagedSettingsRequestObservation(requests);
+        return { ...sample, requests: observation, requestsSettled: observation.settled };
+      },
+      { phase: 'settings' }
+    );
+    evidence.settingsPreparation = settingsPreparation;
+    assert(
+      settingsPreparation.ready,
+      `Settings preparation unavailable: ${settingsPreparation.lastReason}`
+    );
     await observe('globalThis.__packagedCatalogObservation.records = []');
     evidence.settingsRefreshClick = [];
     await clickControl(
@@ -866,7 +1040,7 @@ export async function verifyPackaged({
       },
       `document.querySelector('[role="dialog"] [data-testid="runtime-provider-refresh-catalog"]:not(:disabled)')`
     );
-    settingsRendered = false;
+    let settingsRendered = false;
     for (let attempt = 0; attempt < 360; attempt++) {
       const requests = await observe('globalThis.__packagedCatalogObservation');
       evidence.settingsRefresh = requests.records;
@@ -885,6 +1059,11 @@ export async function verifyPackaged({
         && Boolean(document.querySelector('[role="dialog"] [data-testid="runtime-provider-refresh-catalog"]:not(:disabled)'))
         && !document.querySelector('[role="dialog"] [data-testid="runtime-provider-loading-skeleton"]')`);
       evidence.settingsRefreshObservation.ready = ready;
+      const failure = settingsRefreshFailure(requests);
+      if (failure) {
+        evidence.settingsRefreshFailure = failure;
+        throw new Error(`Settings refresh completed with ${failure.category}: ${failure.cause}`);
+      }
       if (ready && settled) {
         settingsRendered = true;
         break;

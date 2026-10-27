@@ -3,6 +3,8 @@ import {
   configureDesktopMcpEnvironment,
   getDesktopMcpChildEnvironment,
 } from '@features/external-agent-connection/main';
+import { OpenCodeBridgeDiagnosticsStore } from '@main/services/team/opencode/bridge/OpenCodeBridgeDiagnosticsStore';
+import { classifyOpenCodeBridgeTermination } from '@main/services/team/opencode/bridge/OpenCodeBridgeWatchdogDiagnostics';
 import { OpenCodeReadinessBridge } from '@main/services/team/opencode/bridge/OpenCodeReadinessBridge';
 import { OpenCodeBackfillRetry } from '@main/services/team/opencode/OpenCodeBackfillRetry';
 import { promises as fs } from 'fs';
@@ -39,6 +41,80 @@ describe('OpenCodeBridgeCommandClient', () => {
   afterEach(async () => {
     vi.useRealTimers();
     await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  it('retains only closed registry receipts from successful bridge stderr in debug mode', async () => {
+    const receipt = {
+      operation: 'ensure_read', phase: 'failed', stage: 'acquire',
+      lockAttemptId: '12345678-1234-4234-8234-123456789abc', pid: 321,
+      processStartedAtMs: 1000, atMs: 2000, waitMs: 2655, heldMs: 0,
+      errorCode: 'ELOCKED', lockMtimeAgeMs: 8200,
+    };
+    runner.nextResult = {
+      stdout: JSON.stringify(bridgeSuccess()), exitCode: 0, timedOut: false,
+      stderr: [
+        'unrelated secret-payload',
+        '[opencode-registry-lock] ' + JSON.stringify({ ...receipt, token: 'secret-payload' }),
+        ...[{ operation: 'unknown-secret-operation' }, { phase: 'unknown' }, { pid: -1 },
+          { waitMs: 1.5 }, { errorCode: 'secret-payload' }].map((change) =>
+          '[opencode-registry-lock] ' + JSON.stringify({ ...receipt, ...change })),
+        '[opencode-registry-lock] {malformed',
+        '[opencode-registry-lock] ' + JSON.stringify(receipt),
+      ].join('\n'),
+    };
+    const client = createClient({ env: { CLAUDE_MULTIMODEL_DEBUG_OPENCODE_COMMAND: '1' } });
+    expect(await client.execute('opencode.launchTeam', { runId: 'run-1' },
+      { cwd: tempDir, timeoutMs: 1000 })).toMatchObject({ ok: true });
+    expect(diagnostics.events).toEqual([expect.objectContaining({
+      type: 'opencode_registry_lock', runId: 'run-1',
+      data: { ...receipt, command: 'opencode.launchTeam', requestId: 'req-1' },
+    })]);
+    expect(JSON.stringify(diagnostics.events)).not.toContain('secret-payload');
+    diagnostics.events.length = 0;
+    await createClient().execute('opencode.launchTeam', {}, { cwd: tempDir, timeoutMs: 1000 });
+    expect(diagnostics.events).toEqual([]);
+  });
+
+  it('returns a completed bridge result while diagnostic storage remains pending and handles late rejection', async () => {
+    const receipt = {
+      operation: 'ensure_read',
+      phase: 'released',
+      stage: 'release',
+      lockAttemptId: '12345678-1234-4234-8234-123456789abc',
+      pid: 321,
+      processStartedAtMs: 1000,
+      atMs: 2000,
+      waitMs: 0,
+      heldMs: 10,
+      errorCode: null,
+      lockMtimeAgeMs: null,
+    };
+    let rejectAppend!: (reason: Error) => void;
+    const appendPending = new Promise<void>((_resolve, reject) => {
+      rejectAppend = reject;
+    });
+    diagnostics.append.mockReturnValueOnce(appendPending);
+    runner.nextResult = {
+      stdout: JSON.stringify(bridgeSuccess()),
+      exitCode: 0,
+      timedOut: false,
+      stderr: '[opencode-registry-lock] ' + JSON.stringify(receipt),
+    };
+    let completed = false;
+    const execution = createClient({ env: { CLAUDE_MULTIMODEL_DEBUG_OPENCODE_COMMAND: '1' } })
+      .execute('opencode.launchTeam', { runId: 'run-1' }, { cwd: tempDir, timeoutMs: 1000 })
+      .then((result) => {
+        completed = true;
+        return result;
+      });
+    try {
+      await vi.waitFor(() => expect(completed).toBe(true), { timeout: 1000 });
+      expect(await execution).toMatchObject({ ok: true, data: { runId: 'run-1' } });
+      expect(diagnostics.append).toHaveBeenCalledOnce();
+    } finally {
+      rejectAppend(new Error('diagnostic storage unavailable'));
+      await execution;
+    }
   });
 
   it('prepares only one shutdown registry child before real admission closure, with copied authority', async () => {
@@ -644,6 +720,52 @@ describe('OpenCodeBridgeCommandClient', () => {
     expect(JSON.parse(await runner.readInputEnvelope(0))).toMatchObject({ timeoutMs: 10_000 });
   });
 
+  it('persists finite termination cause and budgets while omitting secret stderr', async () => {
+    const storePath = path.join(tempDir, 'diagnostics');
+    const cause =
+      'Failed to verify termination of Unix process tree 123; still observable: 123, 124';
+    runner.nextResult = {
+      stdout: '',
+      stderr: 'Authorization: Bearer secret-live-key',
+      exitCode: null,
+      timedOut: true,
+      outcomeUnknownReason: 'termination_failed',
+      terminationReason: classifyOpenCodeBridgeTermination(cause),
+    };
+    const result = await createClient({
+      diagnostics: new OpenCodeBridgeDiagnosticsStore({ directory: storePath }),
+    }).execute('opencode.readiness', {}, { cwd: tempDir, timeoutMs: 300_000 });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        kind: 'transport_watchdog_timeout',
+        retryable: true,
+        details: {
+          outcomeUnknownReason: 'termination_failed',
+          terminationReason: 'exit_wait_expired',
+          runtimeTimeoutMs: 300_000,
+          transportWatchdogTimeoutMs: 325_000,
+        },
+      },
+    });
+    expect(result.ok ? '' : result.error.message).toBe(
+      'OpenCode bridge process could not be terminated; process outcome is unknown'
+    );
+    const stored = await fs.readFile(path.join(storePath, 'latest.json'), 'utf8');
+    expect(JSON.parse(stored)).toMatchObject({
+      data: {
+        stderr: '[omitted]',
+        terminationReason: 'exit_wait_expired',
+        runtimeTimeoutMs: 300_000,
+        transportWatchdogTimeoutMs: 325_000,
+      },
+    });
+    for (const value of [JSON.stringify(result), stored])
+      expect(value).not.toContain('secret-live-key');
+    expect(stored).not.toContain(cause);
+    expect(classifyOpenCodeBridgeTermination('arbitrary secret-live-key')).toBe('unknown');
+  });
+
   it('classifies bridge output overflow as an unknown outcome instead of a provider error', async () => {
     runner.nextResult = {
       stdout: '',
@@ -1215,6 +1337,105 @@ describe('OpenCodeBridgeCommandClient', () => {
 });
 
 describe('redactBridgeDiagnosticText', () => {
+  it.each([
+    'token={"value":"TEST_SECRET"} status=ok',
+    'API_KEY=["TEST_SECRET",{"value":"TEST_SECRET"}] status=ok',
+    'refresh token: {"access":"TEST_SECRET"} status=ok',
+    'Authorization: Bearer {"value":"TEST_SECRET"} status=ok',
+  ])('redacts bare-key containers and preserves public diagnostics: %s', (value) => {
+    const redacted = redactBridgeDiagnosticText(value);
+    expect(redacted).not.toContain('TEST_SECRET');
+    expect(redacted).toContain('[redacted] status=ok');
+    expect(redactBridgeDiagnosticText(redacted)).toBe(redacted);
+  });
+
+  it.each([
+    'token={"value":"TEST_SECRET"',
+    'token=["TEST_SECRET"}',
+    'token={}TEST_SECRET status=ok',
+    'token=[]TEST_SECRET status=ok',
+    'token=prefix"TEST_SECRET suffix" status=ok',
+    "token=prefix'TEST_SECRET suffix' status=ok",
+    'token=prefix`TEST_SECRET` status=ok',
+    'token=prefix\\ TEST_SECRET status=ok',
+    'token=prefix\\\"TEST_SECRET status=ok',
+    'token="TEST_SECRET"TEST_SECRET_SUFFIX status=ok',
+    "token='TEST_SECRET'TEST_SECRET_SUFFIX status=ok",
+    "token={'value':'TEST_SECRET'} status=ok",
+  ])('fails closed for unsupported bare credential syntax: %s', (value) => {
+    const redacted = redactBridgeDiagnosticText(value);
+    expect(redacted).not.toContain('TEST_SECRET');
+    expect(redactBridgeDiagnosticText(redacted)).toBe(redacted);
+  });
+
+  it.each([
+    '{"credential":"TEST_SECRET"}',
+    'credentials="TEST_SECRET" status=ok',
+    'Authorization: Negotiate TEST_SECRET',
+    'Authorization: "Bearer TEST_SECRET" status=public',
+    'Authorization: Digest username="u",response="TEST_SECRET"',
+    'cookie=session-TEST_SECRET status=ok',
+    'Cookie: sid=TEST_SECRET; other=TEST_SECRET_SECOND',
+    'Set-Cookie: sid=TEST_SECRET; other=TEST_SECRET_SECOND\r\n status=private',
+    '{"Set-Cookie":"session=TEST_SECRET; Path=/"}',
+  ])('redacts generic credentials before any raw log sink: %s', (value) => {
+    const redacted = redactBridgeDiagnosticText(value);
+    expect(redacted).not.toContain('TEST_SECRET');
+    expect(redacted).toContain('[redacted]');
+    expect(redactBridgeDiagnosticText(redacted)).toBe(redacted);
+  });
+
+  it('keeps long dashed non-assignments from blocking diagnostic redaction', () => {
+    const started = performance.now();
+    const redacted = redactBridgeDiagnosticText(`AUTH_TOKEN="TEST_SECRET" ${'x-'.repeat(8_000)}`);
+
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(redacted).toContain('AUTH_TOKEN=[redacted]');
+    expect(redacted).not.toContain('TEST_SECRET');
+    expect(redacted.length).toBeLessThan(4_100);
+  });
+
+  it.each([
+    'abort response: {"token":"TEST_SECRET_JSON","status":"abort failed"}',
+    'abort response: {"Authorization":"Bearer TEST_SECRET_JSON_AUTH"}',
+    'AUTH_TOKEN="TEST_SECRET_QUOTED more secret" status=failed',
+    "password='TEST_SECRET_SINGLE\nsecond line' status=failed",
+    'api-key="TEST_SECRET_ESCAPED\\"still secret" status=failed',
+    JSON.stringify({ body: JSON.stringify({ token: 'TEST_SECRET_NESTED"still secret' }) }),
+    'secret="TEST_SECRET_UNTERMINATED\r\nmore secret',
+  ])('redacts complete quoted values from external diagnostics: %s', (value) => {
+    const redacted = redactBridgeDiagnosticText(value);
+
+    expect(redacted).toContain('[redacted]');
+    expect(redacted).not.toContain('TEST_SECRET');
+    expect(redacted).not.toContain('more secret');
+    expect(redacted).not.toContain('second line');
+    expect(redacted).not.toContain('still secret');
+    expect(redactBridgeDiagnosticText(redacted)).toBe(redacted);
+  });
+
+  it('redacts punctuation inside bare credentials while retaining JSON field delimiters', () => {
+    expect(
+      redactBridgeDiagnosticText(
+        'token=TEST_SECRET,TAIL password=ab;cd AUTH_TOKEN=[redacted],TAIL ' +
+          'secret=abc}def] status=failed\r\n{"token":123,"status":"failed"}'
+      )
+    ).toBe(
+      'token=[redacted] password=[redacted] AUTH_TOKEN=[redacted] ' +
+        'secret=[redacted] status=failed\r\n{"token":[redacted],"status":"failed"}'
+    );
+  });
+
+  it('redacts before bounding even when a quoted value crosses the input cap', () => {
+    const redacted = redactBridgeDiagnosticText(
+      `${'x'.repeat(3_970)} AUTH_TOKEN="TEST_SECRET_PREFIX${'s'.repeat(100)}" tail`
+    );
+
+    expect(redacted).not.toContain('TEST_SECRET');
+    expect(redacted).toContain('[redacted]');
+    expect(redacted.length).toBeLessThan(4_100);
+  });
+
   it('redacts common secret forms and caps large payloads', () => {
     const value = `token=abc password:secret Authorization: Bearer live ${'x'.repeat(5000)}`;
 

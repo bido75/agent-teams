@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { createOpenCodeBridgeHandshakeFailure } from '../../../../src/main/services/team/opencode/bridge/OpenCodeBridgeHandshakeClient';
 import { OpenCodeMemberMessageDeliveryService } from '../../../../src/main/services/team/opencode/delivery/OpenCodeMemberMessageDeliveryService';
 import { OPENCODE_STALE_PENDING_POLICY_CONFIG } from '../../../../src/main/services/team/opencode/delivery/OpenCodePromptDeliveryStalePendingPolicy';
 import { OpenCodeVisibleReplyProofService } from '../../../../src/main/services/team/opencode/delivery/OpenCodeVisibleReplyProofService';
@@ -109,6 +110,7 @@ function makeDeps(
       },
       configMember: { name: 'alice', providerId: 'opencode' as const },
     })),
+    isMemberLifecycleOperationActive: () => false,
     stoppingSecondaryRuntimeTeams: { has: vi.fn(() => false) },
     readPersistedTeamProjectPath: vi.fn(() => null),
     resolveDeliverableTrackedRuntimeRunId: vi.fn(() => 'run-1'),
@@ -359,58 +361,85 @@ describe('OpenCodeMemberMessageDeliveryService', () => {
     }
   );
 
-  it('keeps a durable group prebridge marker unknown and never dispatches it again', async () => {
-    const record = makeLedgerRecord({
-      groupChatId: 'group-a',
-      status: 'accepted',
-      acceptanceUnknown: true,
-      lastReason: 'group_handoff_started_acceptance_unknown',
-    });
-    const send = vi.fn();
-    const observe = vi.fn();
-    const ledger = {
-      getActiveForMember: vi.fn(async () => record),
-      ensurePending: vi.fn(async () => record),
-      getByInboxMessage: vi.fn(async () => record),
-    };
-    const deps = makeDeps({
-      getOpenCodeRuntimeMessageAdapter: () => ({
-        ...makeAdapter(send),
-        observeMessageDelivery: observe,
-      }),
-      createOpenCodePromptDeliveryLedger: vi.fn(() => ledger as never),
-      openCodePromptDeliveryWatchdogScheduler: { isEnabled: vi.fn(() => true) },
-      openCodeVisibleReplyProofService: {
-        applyDestinationProof: vi.fn(async () => ({ ledgerRecord: record, visibleReply: null })),
-        materializePlainTextReplyIfNeeded: vi.fn(async () => ({
-          ledgerRecord: record,
-          visibleReply: null,
-        })),
-        findByRelayOfMessageId: vi.fn(async () => null),
-      },
-      isOpenCodeDeliveryResponseReadCommitAllowed: vi.fn(async () => false),
-    });
-    const service = new OpenCodeMemberMessageDeliveryService(deps);
-    const input = {
-      memberName: 'alice',
-      messageId: 'msg-1',
-      text: 'hello group',
-      groupChatId: 'group-a',
-      groupMessageId: 'canonical-a',
-      groupChatProtocolVersion: 1 as const,
-      groupRunKey: 'run-1',
-    };
-    for (let retry = 0; retry < 2; retry++)
-      expect(await service.deliver('team-a', input)).toMatchObject({
-        delivered: false,
-        accepted: false,
+  it.each([
+    { correction: false, canObserve: false },
+    { correction: true, canObserve: false },
+    { correction: false, canObserve: true },
+    { correction: true, canObserve: true },
+  ])(
+    'keeps a durable group prebridge marker unknown without redispatch (correction=$correction, observe=$canObserve)',
+    async ({ correction, canObserve }) => {
+      const record = makeLedgerRecord({
+        groupChatId: 'group-a',
+        status: 'accepted',
         acceptanceUnknown: true,
-        reason: 'group_handoff_acceptance_unknown',
+        lastReason: 'group_handoff_started_acceptance_unknown',
+        ...(correction
+          ? {
+              groupRepairHandoffPending: true,
+              acceptanceUnknown: false,
+              acceptedAt: '2026-05-09T12:00:00.000Z',
+              runtimePromptMessageId: 'original-accepted-prompt',
+            }
+          : {}),
       });
-    expect(send).not.toHaveBeenCalled();
-    expect(observe).not.toHaveBeenCalled();
-    expect(deps.requeueOpenCodeRuntimeManifestWatermarkDeliveryIfNeeded).not.toHaveBeenCalled();
-  });
+      const send = vi.fn();
+      const observe = vi.fn(async () => ({
+        providerId: 'opencode' as const,
+        memberName: 'alice',
+        ok: true,
+        diagnostics: [],
+      }));
+      const ledger = {
+        getActiveForMember: vi.fn(async () => record),
+        ensurePending: vi.fn(async () => record),
+        getByInboxMessage: vi.fn(async () => record),
+        applyObservation: vi.fn(async () => record),
+        markNextAttemptDeferred: vi.fn(async () => record),
+      };
+      const deps = makeDeps({
+        getOpenCodeRuntimeMessageAdapter: () => ({
+          ...makeAdapter(send),
+          ...(canObserve ? { observeMessageDelivery: observe } : {}),
+        }),
+        createOpenCodePromptDeliveryLedger: vi.fn(() => ledger as never),
+        openCodePromptDeliveryWatchdogScheduler: { isEnabled: vi.fn(() => true) },
+        openCodeVisibleReplyProofService: {
+          applyDestinationProof: vi.fn(async () => ({ ledgerRecord: record, visibleReply: null })),
+          materializePlainTextReplyIfNeeded: vi.fn(async () => ({
+            ledgerRecord: record,
+            visibleReply: null,
+          })),
+          findByRelayOfMessageId: vi.fn(async () => null),
+        },
+        isOpenCodeDeliveryResponseReadCommitAllowed: vi.fn(async () => false),
+        scheduleOpenCodePromptDeliveryWatchdog: vi.fn(),
+      });
+      const service = new OpenCodeMemberMessageDeliveryService(deps);
+      const input = {
+        memberName: 'alice',
+        messageId: 'msg-1',
+        text: 'hello group',
+        groupChatId: 'group-a',
+        groupMessageId: 'canonical-a',
+        groupChatProtocolVersion: 1 as const,
+        groupRunKey: 'run-1',
+      };
+      for (let retry = 0; retry < 2; retry++)
+        expect(await service.deliver('team-a', input)).toMatchObject({
+          delivered: false,
+          accepted: false,
+          acceptanceUnknown: true,
+          reason: 'group_handoff_acceptance_unknown',
+        });
+      expect(send).not.toHaveBeenCalled();
+      expect(observe).toHaveBeenCalledTimes(canObserve ? 2 : 0);
+      expect(ledger.applyObservation).toHaveBeenCalledTimes(canObserve ? 2 : 0);
+      expect(ledger.markNextAttemptDeferred).toHaveBeenCalledTimes(canObserve ? 2 : 0);
+      expect(record).toMatchObject({ attempts: 0, status: 'accepted' });
+      expect(deps.requeueOpenCodeRuntimeManifestWatermarkDeliveryIfNeeded).not.toHaveBeenCalled();
+    }
+  );
 
   it('returns bridge unavailable before reading member directory when runtime adapter is missing', async () => {
     const readOpenCodeMemberDirectory = vi.fn(async () =>
@@ -634,6 +663,90 @@ describe('OpenCodeMemberMessageDeliveryService', () => {
         retry: true,
       })
     );
+    expect(delivery).toMatchObject({
+      delivered: false,
+      accepted: false,
+      responsePending: false,
+      responseState: 'reconcile_failed',
+      ledgerStatus: 'failed_terminal',
+      reason: 'opencode_message_delivery_exception: bridge down',
+    });
+  });
+  it.each([true, false])('preserves delivery catch semantics with closed handshake=%s and foreign getters', async (handshake) => {
+    const codeGetter = vi.fn(() => { throw new Error('TEST foreign code getter'); });
+    const failure = handshake ? createOpenCodeBridgeHandshakeFailure({kind:'runtime_not_ready',retryable:false,
+      message:'execution_owner_not_private:private_acl_foreign_allow:0 @native:runStateRequest'})
+      : Object.defineProperty(new Error('bridge down'), 'code', { get: codeGetter });
+    const pendingRecord = makeLedgerRecord({});
+    const failedRetryableRecord = makeLedgerRecord({
+      status: 'failed_retryable',
+      responseState: 'reconcile_failed',
+      attempts: 3,
+      maxAttempts: 3,
+      lastReason: 'opencode_message_delivery_exception: bridge down',
+      diagnostics: ['opencode_message_delivery_exception: bridge down'],
+    });
+    const terminalRecord = makeLedgerRecord({
+      status: 'failed_terminal',
+      responseState: 'reconcile_failed',
+      attempts: 3,
+      maxAttempts: 3,
+      failedAt: '2026-05-09T12:00:01.000Z',
+      lastReason: 'opencode_message_delivery_exception: bridge down',
+      diagnostics: ['opencode_message_delivery_exception: bridge down'],
+    });
+    const ledger = {
+      getActiveForMember: vi.fn(async () => null),
+      ensurePending: vi.fn(async () => pendingRecord),
+      getByInboxMessage: vi.fn(async () => pendingRecord),
+      applyDeliveryResult: vi.fn(async () => failedRetryableRecord),
+    };
+    const deps = makeDeps({
+      getOpenCodeRuntimeMessageAdapter: () =>
+        makeAdapter(
+          vi.fn(async () => {
+            throw failure;
+          })
+        ),
+      createOpenCodePromptDeliveryLedger: vi.fn(() => ledger as never),
+      openCodePromptDeliveryWatchdogScheduler: { isEnabled: vi.fn(() => true) },
+      openCodeVisibleReplyProofService: {
+        applyDestinationProof: vi.fn(async () => ({
+          ledgerRecord: pendingRecord,
+          visibleReply: null,
+        })),
+        materializePlainTextReplyIfNeeded: vi.fn(async () => ({
+          ledgerRecord: pendingRecord,
+          visibleReply: null,
+        })),
+        findByRelayOfMessageId: vi.fn(async () => null),
+      },
+      isOpenCodeDeliveryResponseReadCommitAllowed: vi.fn(async () => false),
+      requeueOpenCodeRuntimeManifestWatermarkDeliveryIfNeeded: vi.fn(async () => pendingRecord),
+      openCodePromptDeliveryFollowUpPolicy: {
+        schedule: vi.fn(async () => terminalRecord),
+      },
+    });
+
+    const delivery = await new OpenCodeMemberMessageDeliveryService(deps).deliver('team-a', {
+      memberName: 'alice',
+      text: 'ship this',
+      messageId: 'msg-1',
+      source: 'ui-send',
+    });
+
+    expect(deps.openCodePromptDeliveryFollowUpPolicy.schedule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ledger,
+        ledgerRecord: failedRetryableRecord,
+        retry: true,
+      })
+    );
+    expect(ledger.applyDeliveryResult).toHaveBeenCalledWith(expect.objectContaining({
+      attempted: true, accepted: false, diagnostics: [handshake ? expect.stringContaining('OPENCODE_STOP_CAUSE_V1=') : 'opencode_message_delivery_exception: bridge down'],
+    }));
+    expect(codeGetter).not.toHaveBeenCalled();
+    if (handshake) expect(JSON.stringify(ledger.applyDeliveryResult.mock.calls)).toContain('execution_owner_not_private');
     expect(delivery).toMatchObject({
       delivered: false,
       accepted: false,

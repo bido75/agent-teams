@@ -1,3 +1,4 @@
+import type { OpenCodeStopCausalFailure } from '@shared/types';
 import type {
   EffortLevel,
   MemberLaunchState,
@@ -233,6 +234,7 @@ export interface TeamRuntimeMemberStopEvidence {
 }
 
 export interface TeamRuntimeStopResult {
+  causalFailure?: OpenCodeStopCausalFailure;
   runId: string;
   teamName: string;
   stopped: boolean;

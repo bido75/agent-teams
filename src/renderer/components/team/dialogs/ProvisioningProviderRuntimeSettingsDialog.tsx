@@ -130,7 +130,7 @@ export const ProvisioningProviderRuntimeSettingsDialog = ({
       providerId: CliProviderId,
       checkReason: AnalyticsProviderCheckReason = 'manual_refresh'
     ) => {
-      invalidateCliProviderModelCatalog();
+      await invalidateCliStatus();
       const refreshed = await fetchCliProviderStatus(providerId, {
         silent: false,
         checkReason,
@@ -138,7 +138,7 @@ export const ProvisioningProviderRuntimeSettingsDialog = ({
       onProviderRuntimeChanged?.(providerId);
       return refreshed;
     },
-    [fetchCliProviderStatus, invalidateCliProviderModelCatalog, onProviderRuntimeChanged]
+    [fetchCliProviderStatus, invalidateCliStatus, onProviderRuntimeChanged]
   );
 
   const refreshRuntimeAfterTerminal = useCallback(() => {
