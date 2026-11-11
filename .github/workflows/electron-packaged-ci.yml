@@ -6,6 +6,9 @@ on:
     paths:
       - '.github/workflows/electron-packaged-ci.yml'
       - 'scripts/ci/packaged-ci-*.mts'
+      - 'scripts/ci/verify-bundled-undici.cjs'
+      - 'test/scripts/verify-bundled-undici.test.cjs'
+      - '.node-version'
       - 'scripts/ci/ci-change-scope.mts'
       - 'scripts/ci/verify-dmg-artwork.mts'
       - 'resources/dmg/**'
@@ -15,6 +18,13 @@ on:
       - 'pnpm-workspace.yaml'
       - 'scripts/electron-builder/**'
       - 'runtime.lock.json'
+      - 'scripts/e2e/opencode-project-path-packaged.mjs'
+      - 'src/main/services/runtime/ClaudeMultimodelBridgeService.ts'
+      - 'src/main/services/runtime/runtimeStatusExecutionContext.ts'
+      - 'src/main/services/team/provisioning/TeamProvisioningProviderPreflight.ts'
+      - 'managed-git.lock.json'
+      - 'scripts/stage-managed-git.mjs'
+      - 'src/main/utils/managedGit.ts'
       - 'scripts/stage-runtime.mjs'
       - 'scripts/lib/github-release-download-error.mjs'
       - 'scripts/lib/runtime-archive-checksum.mjs'
@@ -27,6 +37,8 @@ on:
       - 'scripts/prepare-cpu-features-rebuild.cjs'
       - 'scripts/postinstall-electron.cjs'
       - 'src/main/ipc/window.ts'
+      - 'src/main/utils/electronDevPathOverrides.ts'
+      - 'src/main/bootstrapUserDataMigration.ts'
 
 permissions:
   contents: read
@@ -40,7 +52,7 @@ concurrency:
 jobs:
   packaged-scope:
     name: classify packaged smoke
-    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubicloud-standard-4' }}
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 10
     outputs:
       scope: ${{ steps.scope.outputs.scope }}
@@ -96,7 +108,7 @@ jobs:
           - platform: linux-x64
             arch: x64
             os: linux
-            runner: ${{ vars.CI_LINUX_RUNNER || 'ubicloud-standard-4' }}
+            runner: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
             pack: pack:linux
             bundle: release/linux-unpacked
 
@@ -126,10 +138,19 @@ jobs:
           done
       - name: Install frozen dependencies
         run: node ./scripts/ci/install-dependencies-with-retry.mjs
+      - name: Verify managed Git pins and archive path safety
+        run: node --test scripts/stage-managed-git.test.mjs
+      - name: Validate packaged OpenCode project-path smoke syntax early
+        if: matrix.os == 'darwin'
+        run: node --check scripts/e2e/opencode-project-path-packaged.mjs
       - name: Typecheck packaged CI policy with pinned compiler
         run: node ./node_modules/@typescript/native/bin/tsc --noEmit -p scripts/tsconfig/tsconfig.packaged-ci.json
       - name: Assert Electron binary was provisioned during install
         run: node -e "const fs=require('node:fs'); const path=require('node:path'); const root=path.dirname(require.resolve('electron/package.json')); const marker=path.join(root,'path.txt'); if(!fs.existsSync(marker) || !fs.existsSync(path.join(root,'dist',fs.readFileSync(marker,'utf8')))) process.exit(1)"
+      - name: Test bundled undici security version policy
+        run: node --test test/scripts/verify-bundled-undici.test.cjs
+      - name: Verify CI Node and Electron built-in undici versions
+        run: node scripts/ci/verify-bundled-undici.cjs
       - name: Verify native rebuild
         run: pnpm exec electron-rebuild -f -o node-pty,ssh2,cpu-features,better-sqlite3
       - name: Stage bundled runtime
@@ -157,6 +178,11 @@ jobs:
         run: node ./scripts/electron-builder/verifyBundle.cjs "${{ matrix.bundle }}" ${{ matrix.os }} ${{ matrix.arch }}
       - name: Smoke packaged SQLite and PTY modules
         run: node ./scripts/electron-builder/smokePackagedNative.cjs "${{ matrix.bundle }}" ${{ matrix.os }}
+      - name: Smoke packaged Git without external installation
+        run: node ./scripts/electron-builder/smokeManagedGit.cjs "${{ matrix.bundle }}" ${{ matrix.os }} ${{ matrix.arch }}
+      - name: Smoke managed Git inside native Windows terminal
+        if: matrix.os == 'win32'
+        run: node ./scripts/electron-builder/smokeManagedTerminalGit.cjs "${{ matrix.bundle }}" ${{ matrix.arch }}
       - name: Smoke packaged MCP handshake
         run: node ./scripts/electron-builder/smokePackagedMcp.cjs "${{ matrix.bundle }}" ${{ matrix.os }}
       - name: Verify macOS 13 minimum
@@ -165,15 +191,18 @@ jobs:
       - name: Smoke packaged app
         if: matrix.os != 'linux'
         run: node ./scripts/electron-builder/smokePackagedApp.cjs "${{ matrix.bundle }}" ${{ matrix.os }}
+      - name: Qualify packaged macOS OpenCode project-path status and model list
+        if: matrix.os == 'darwin'
+        run: node scripts/e2e/opencode-project-path-packaged.mjs "${{ matrix.bundle }}"
       - name: Smoke packaged app under Xvfb
         if: matrix.os == 'linux'
         run: xvfb-run -a node ./scripts/electron-builder/smokePackagedApp.cjs "${{ matrix.bundle }}" linux
 
   packaged-full-gate:
     needs: [packaged-scope, packaged-smoke]
-    if: always()
+    if: always() && !cancelled()
     name: ${{ github.event.action == 'edited' && !github.event.changes.base && (github.event.changes.title || github.event.changes.body) && 'metadata packaged gate' || 'packaged full gate' }}
-    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubicloud-standard-4' }}
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6

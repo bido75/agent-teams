@@ -43,12 +43,14 @@ const Probe = ({
   refreshRevision,
   periodic = false,
   statusChecking = false,
+  onCatalogRecovery,
 }: {
   enabled?: boolean;
   projectPath?: string;
   refreshRevision?: number;
   periodic?: boolean;
   statusChecking?: boolean;
+  onCatalogRecovery?: (receipt: { projectPath: string | null; freshUntil: string | null }) => void;
 }) => {
   observed = useOpenCodeConnectedModelCatalog({
     enabled,
@@ -56,6 +58,7 @@ const Probe = ({
     projectPath,
     passiveProviderStatus: passive,
     refreshRevision,
+    onCatalogRecovery,
   });
   useDashboardStatusRefresh(periodic, observed.refresh);
   return null;
@@ -123,6 +126,117 @@ describe('connected OpenCode dashboard catalog', () => {
       diagnostics: { reportId, stage: 'runtime_command', exitCode: 7 },
     },
   });
+
+  it('reports genuine current-project OpenCode read success without promoting catalog authority', async () => {
+    const recovered = vi.fn();
+    await act(async () => root.render(<Probe onCatalogRecovery={recovered} />));
+    expect(recovered).toHaveBeenCalledTimes(1);
+    expect(recovered.mock.calls[0][0].projectPath).toBe('/sandbox/a');
+    expect(Date.parse(recovered.mock.calls[0][0].freshUntil)).toBeGreaterThan(Date.now());
+    expect(observed.providerStatus).toMatchObject({
+      supported: false,
+      authenticated: false,
+      capabilities: { teamLaunch: false, oneShot: false },
+      modelCatalog: { status: 'degraded', fetchedAt: new Date(0).toISOString() },
+    });
+  });
+
+  it.each(['google', 'openrouter', 'anthropic'] as const)(
+    'finishes the %s model read before status recovery can invalidate its cache',
+    async (source) => {
+      mocks.directory.mockResolvedValue(directory(['opencode', source]));
+      let finishSource!: () => void;
+      let statusRecoveryStarted = false;
+      const recovered = vi.fn(() => {
+        statusRecoveryStarted = true;
+      });
+      mocks.models.mockImplementation(({ providerId }) => {
+        if (providerId === 'opencode') return Promise.resolve(models('opencode'));
+        return new Promise((resolve) => {
+          finishSource = () => {
+            const response = models(source);
+            // Simulates a successful CLI result being relabelled stale by an
+            // overlapping status recovery/cache generation change in main.
+            response.models.catalogState = statusRecoveryStarted ? 'stale' : 'fresh';
+            resolve(response);
+          };
+        });
+      });
+
+      await act(async () => root.render(<Probe onCatalogRecovery={recovered} />));
+      expect(mocks.models.mock.calls.map(([input]) => input.providerId)).toEqual([
+        'opencode',
+        source,
+      ]);
+      expect(recovered).not.toHaveBeenCalled();
+
+      await act(async () => finishSource());
+      expect(recovered).toHaveBeenCalledTimes(1);
+      expect(observed.failures).toEqual([]);
+      expect(new Set(observed.providerStatus?.models)).toEqual(
+        new Set([`${source}/model-0`, 'opencode/model-0'])
+      );
+      expect(observed.providerStatus?.modelCatalogRefreshState).toBe('ready');
+    }
+  );
+
+  it.each(['stale', 'expired', 'failed'] as const)(
+    'does not report %s OpenCode reads or another source success as recovery',
+    async (condition) => {
+      const recovered = vi.fn();
+      mocks.models.mockImplementation(async ({ providerId }) => {
+        if (providerId !== 'opencode') return models(providerId);
+        if (condition === 'failed') throw new Error('TEST catalog unavailable');
+        const response = models(providerId);
+        return {
+          ...response,
+          models: {
+            ...response.models,
+            catalogState: condition === 'stale' ? 'stale' : 'fresh',
+            freshUntil: new Date(0).toISOString(),
+          },
+        };
+      });
+      await act(async () => root.render(<Probe onCatalogRecovery={recovered} />));
+      expect(mocks.models).toHaveBeenCalledTimes(2);
+      expect(recovered).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(['project', 'context', 'unmount'] as const)(
+    'does not publish an obsolete read after %s changes',
+    async (change) => {
+      const oldRecovery = vi.fn();
+      const newRecovery = vi.fn();
+      let completeOld!: (value: ReturnType<typeof models>) => void;
+      mocks.models.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            completeOld = resolve;
+          })
+      );
+      await act(async () => root.render(<Probe onCatalogRecovery={oldRecovery} />));
+      await act(async () =>
+        root.render(
+          change === 'unmount' ? null : (
+            <Probe
+              projectPath={change === 'project' ? '/sandbox/b' : '/sandbox/a'}
+              onCatalogRecovery={newRecovery}
+            />
+          )
+        )
+      );
+      await act(async () => completeOld(models('opencode')));
+      expect(oldRecovery).not.toHaveBeenCalled();
+      expect(newRecovery).toHaveBeenCalledTimes(change === 'unmount' ? 0 : 1);
+      if (change !== 'unmount') {
+        expect(newRecovery.mock.calls[0][0].projectPath).toBe(
+          change === 'project' ? '/sandbox/b' : '/sandbox/a'
+        );
+        expect(mocks.models.mock.calls[1][0].refresh).toBe(true);
+      }
+    }
+  );
 
   it.each(['directory', 'models'] as const)(
     'preserves typed %s failure and clears it on retry',

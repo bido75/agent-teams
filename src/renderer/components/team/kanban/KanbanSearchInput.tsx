@@ -133,13 +133,14 @@ export const KanbanSearchInput = ({
         className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--color-text-muted)]"
       />
       <input
+        data-testid="kanban-search-input"
         ref={inputRef}
         type="text"
         placeholder={t('kanban.search.placeholder')}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={handleKeyDown}
-        className="h-8 w-full min-w-[140px] rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-8 text-xs text-[var(--color-text)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-border-emphasis)] focus:outline-none"
+        className="h-8 w-full min-w-[140px] rounded-md border border-[var(--color-border)] bg-[var(--color-form-control-bg)] px-8 text-xs text-[var(--color-text)] placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-border-emphasis)] focus:outline-none"
       />
       {value && (
         <Tooltip>

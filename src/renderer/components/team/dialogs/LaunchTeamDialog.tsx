@@ -80,15 +80,19 @@ import { isTeamProviderId, normalizeOptionalTeamProviderId } from '@shared/utils
 import {
   AlertTriangle,
   Check,
-  ChevronDown,
-  ChevronRight,
-  ExternalLink,
   Info,
   X,
 } from 'lucide-react';
 import { useShallow } from 'zustand/react/shallow';
 
-import { CronScheduleInput } from '../schedule/CronScheduleInput';
+import { HistoricalPromptReview } from '../schedule/HistoricalPromptReview';
+import {
+  markScheduleProviderSwitch,
+  resolveScheduleLaunchConfig,
+} from '../schedule/resolveScheduleLaunchConfig';
+import { SmartScheduleFields } from '../schedule/SmartScheduleFields';
+import { useSavedPromptReview } from '../schedule/useSavedPromptReview';
+import { validateScheduleForm } from '../schedule/validateScheduleForm';
 
 import { AdvancedCliSection } from './AdvancedCliSection';
 import { AnthropicFastModeSelector } from './AnthropicFastModeSelector';
@@ -121,7 +125,9 @@ import {
   getDialogMemberModelIssues,
   getDialogTeamModelValidationError,
 } from './memberModelScope';
+import { shouldLoadOpenCodeDialogCatalog } from './openCodeDialogCatalogGate';
 import { OpenCodeProviderScopedDialogCatalogLoaders as ScopedCatalogLoaders } from './OpenCodeProviderScopedDialogCatalogLoaders';
+import { OpenCodeSourceDirectoryProvider } from './OpenCodeSourceDirectoryProvider';
 import * as optionalPreflight from './optionalProviderPreflight';
 import { OptionalSettingsSection } from './OptionalSettingsSection';
 import { resolvePersistedTeamModel } from './persistedTeamModel';
@@ -198,7 +204,6 @@ import type {
   CliProviderId,
   CreateScheduleInput,
   EffortLevel,
-  ScheduleLaunchConfig,
   TeamCreateRequest,
   TeamFastMode,
   TeamLaunchRequest,
@@ -208,8 +213,6 @@ import type {
 
 const APP_TEAM_RUNTIME_DISALLOWED_TOOLS = 'TeamDelete,TodoWrite,TaskCreate,TaskUpdate';
 const LAUNCH_AUTHORITY_BLOCKER_ID = 'launch-team-launch-authority-blocker';
-const ANTHROPIC_AGENT_SDK_CREDIT_ARTICLE_URL =
-  'https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan';
 
 export type { LaunchTeamDialogProps, TeamLaunchDialogMode } from './LaunchTeamDialog.types';
 
@@ -352,7 +355,7 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
   const prepareRequestSeqRef = useRef(0);
   const appliedDefaultProjectPathRef = useRef<string | null>(null);
   const hydrationRef = useRef({ key: null as string | null, dirty: false, rosterDirty: false });
-  const storeMembers = useStore((s) => selectResolvedMembersForTeamName(s, s.selectedTeamName));
+  const storeMembers = useStore((s) => selectResolvedMembersForTeamName(s, effectiveTeamName));
   const previousLaunchParams = useStore((s) =>
     effectiveTeamName ? s.launchParamsByTeam[effectiveTeamName] : undefined
   );
@@ -389,6 +392,25 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
   const [customArgs, setCustomArgsRaw] = useState(
     () => localStorage.getItem(`team:lastCustomArgs:${effectiveTeamName}`) ?? ''
   );
+  // “legacy” is an edit-only state. Missing fields in an old JSON schedule
+  // must never be silently upgraded by changing its time or prompt.
+  const [scheduleExecutionMode, setScheduleExecutionMode] = useState<'legacy' | 'agent' | 'team'>(
+    'agent'
+  );
+  const [scheduleTargetMember, setScheduleTargetMember] = useState('');
+  const [scheduleFormTouched, setScheduleFormTouched] = useState(false);
+  const isTeamSchedule = isSchedule && scheduleExecutionMode === 'team';
+  const isTaskFirstSchedule = isSchedule && (schedule?.taskFirst === true || !isEditing);
+  const usesSavedTeamRuntime = isTeamSchedule || isTaskFirstSchedule;
+  const scheduleRuntimeEditedRef = useRef({ provider: false, model: false, effort: false, fastMode: false, skipPermissions: false });
+  const [savedPromptReview, setSavedPromptReview] = useSavedPromptReview({
+    open, enabled: isTaskFirstSchedule, teamName: effectiveTeamName,
+    scheduleId: schedule?.id, reviewed: schedule?.reviewedSavedPrompt === true,
+  });
+  // A newly selected team must not inherit the former team's target member.
+  useEffect(() => {
+    if (isSchedule && !isEditing) setScheduleTargetMember('');
+  }, [effectiveTeamName, isEditing, isSchedule]);
   const [schedLabel, setSchedLabel] = useState('');
   const [schedExpanded, setSchedExpanded] = useState(true);
   const [cronExpression, setCronExpression] = useState('0 9 * * 1-5');
@@ -451,8 +473,9 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
       effectiveCwd,
       open && launchPreflightSelectionReady && requestedMemberProviders.includes('anthropic')
     );
-  const openCodeCatalogEnabled =
-    open && isLaunchMode && multimodelEnabled && requestedMemberProviders.includes('opencode');
+  const openCodeCatalogEnabled = shouldLoadOpenCodeDialogCatalog(
+    open, isLaunchMode, multimodelEnabled, requestedMemberProviders
+  );
   const {
     effectiveMemberDrafts,
     effectiveSelectedModel,
@@ -649,7 +672,6 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
   const createSchedule = useStore((s) => s.createSchedule);
   const updateSchedule = useStore((s) => s.updateSchedule);
   // localStorage persistence wrappers
-
   const setWorktreeEnabled = (value: boolean): void => {
     setWorktreeEnabledRaw(value);
     localStorage.setItem(`team:lastWorktreeEnabled:${effectiveTeamName}`, String(value));
@@ -666,8 +688,21 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
     setCustomArgsRaw(value);
     localStorage.setItem(`team:lastCustomArgs:${effectiveTeamName}`, value);
   };
+  // A hidden legacy runtime (e.g. Gemini) is displayed using the supported
+  // one-shot picker. Selecting a model/effort/fast mode is an explicit switch
+  // to that displayed provider, not a cross-provider model override.
+  const markDisplayedProviderAsEdited = (): void => {
+    if (isSchedule && isEditing) {
+      markScheduleProviderSwitch(
+        scheduleRuntimeEditedRef.current, schedule?.launchConfig.providerId, selectedProviderId
+      );
+    }
+  };
   const setSelectedProviderId = (value: TeamProviderId): void => {
     hydrationRef.current.dirty = true;
+    if (isSchedule) Object.assign(scheduleRuntimeEditedRef.current, {
+      provider: true, model: true, effort: true, fastMode: true,
+    });
     setRuntimeSelectionUnresolved(false);
     const normalizedValue = isLaunchMode
       ? normalizeLeadProviderForMode(value, multimodelEnabled)
@@ -689,7 +724,9 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
     }
   };
   const setSelectedModel = (value: string): void => {
+    markDisplayedProviderAsEdited();
     hydrationRef.current.dirty = true;
+    if (isSchedule) Object.assign(scheduleRuntimeEditedRef.current, { model: true, effort: true });
     const normalizedValue = normalizeExplicitTeamModelForUi(selectedProviderId, value);
     const nextEffort = getAvailableTeamEffortValue({
       providerId: selectedProviderId,
@@ -711,6 +748,7 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
     localStorage.setItem('team:lastLimitContext', String(value));
   };
   const setSkipPermissions = (value: boolean): void => {
+    if (isSchedule) scheduleRuntimeEditedRef.current.skipPermissions = true;
     hydrationRef.current.dirty = true;
     setSkipPermissionsRaw(value);
     localStorage.setItem('team:lastSkipPermissions', String(value));
@@ -718,11 +756,12 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
   const setSelectedEffort = (value: string): void => {
     // Always an explicit user choice, including Default (''); programmatic clears
     // go through autoResetSelectedEffort instead.
+    markDisplayedProviderAsEdited();
+    if (isSchedule) scheduleRuntimeEditedRef.current.effort = true;
     hydrationRef.current.dirty = true;
     setSelectedEffortRaw(value);
     localStorage.setItem('team:lastSelectedEffort', value);
   };
-
   const autoResetSelectedEffort = (): void => {
     // EffortLevelSelector clears an unavailable effort through this callback. That
     // programmatic reset is not a user edit: no hydration cancel, no dirty mark.
@@ -731,6 +770,8 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
   };
 
   const setSelectedFastMode = (value: TeamFastMode): void => {
+    markDisplayedProviderAsEdited();
+    if (isSchedule) scheduleRuntimeEditedRef.current.fastMode = true;
     hydrationRef.current.dirty = true;
     setSelectedFastModeRaw(value);
     localStorage.setItem('team:lastSelectedFastMode', value);
@@ -794,8 +835,13 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
   // Populate form in schedule edit mode
   useEffect(() => {
     if (!open || !isSchedule) return;
+    scheduleRuntimeEditedRef.current = {
+      provider: false, model: false, effort: false, fastMode: false, skipPermissions: false,
+    };
     if (schedule) {
-      // Edit mode — populate from existing schedule
+      // Edit mode — preserve the missing mode of existing schedules on Save.
+      setScheduleExecutionMode(schedule.executionMode ?? 'legacy');
+      setScheduleTargetMember(schedule.targetMember ?? '');
       setSchedLabel(schedule.label ?? '');
       setCronExpression(schedule.cronExpression);
       setTimezone(schedule.timezone);
@@ -827,7 +873,9 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
       setSavedLaunchProviderBackendId(schedule.launchConfig.providerBackendId ?? null);
       setScheduleHydrationKey(`${schedule.id}:${schedule.updatedAt ?? ''}`);
     } else {
-      // Create mode — reset to defaults
+      // Create mode — the new default is a smart one-agent schedule.
+      setScheduleExecutionMode('agent');
+      setScheduleTargetMember('');
       setSchedLabel('');
       setCronExpression('0 9 * * 1-5');
       setTimezone(getLocalTimezone());
@@ -851,6 +899,7 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
     }
 
     setLocalError(null);
+    setScheduleFormTouched(false);
     setIsSubmitting(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, isSchedule, schedule?.id]);
@@ -2008,33 +2057,23 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
 
   // Validation
 
-  const validationErrors = useMemo(() => {
-    const errors: string[] = [];
-    if (selectedProjectPathDeleted) {
-      errors.push('Project folder no longer exists');
-    } else if (!effectiveCwd) {
-      errors.push('Working directory is required');
-    } else if (cwdMode === 'custom' && customProjectFolder.blocksSubmit) {
-      errors.push('Project folder is not available');
-    }
-    if (worktreeGitBlockingMessage) errors.push(worktreeGitBlockingMessage);
-    if (isSchedule) {
-      if (!effectiveTeamName) errors.push('Team is required');
-      if (!promptDraft.value.trim()) errors.push('Prompt is required');
-      if (!cronExpression.trim()) errors.push('Cron expression is required');
-    }
-    return errors;
-  }, [
-    effectiveCwd,
-    selectedProjectPathDeleted,
-    cwdMode,
-    customProjectFolder.blocksSubmit,
-    worktreeGitBlockingMessage,
-    isSchedule,
-    effectiveTeamName,
-    promptDraft.value,
+  const validationErrors = validateScheduleForm({
+    isSchedule, usesSavedTeamRuntime,
+    mode: scheduleExecutionMode,
+    targetMember: scheduleTargetMember,
+    team: teamByName[effectiveTeamName],
+    teamName: effectiveTeamName,
+    prompt: promptDraft.value,
     cronExpression,
-  ]);
+    timezone,
+    cwd: effectiveCwd,
+    selectedProjectPathDeleted,
+    isCustomCwd: cwdMode === 'custom',
+    customFolderBlocksSubmit: customProjectFolder.blocksSubmit,
+    worktreeGitBlockingMessage,
+    rosterUnavailable: t('members.list.unavailable'),
+    recipientUnavailable: t('messages.manualQueue.recipientUnavailable'),
+  });
   const modelValidationError = useMemo(
     () =>
       gatewayBindings.error ??
@@ -2096,7 +2135,7 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
   }, [isLaunchMode, membersDrafts]);
 
   const provisioningError = isLaunchMode ? props.provisioningError : null;
-  const activeError = localError ?? modelValidationError ?? provisioningError;
+  const activeError = localError ?? (!isSchedule || isEditing || scheduleFormTouched ? validationErrors[0] : null) ?? (usesSavedTeamRuntime ? null : modelValidationError) ?? provisioningError;
   const effectivePrepare = useMemo(
     () =>
       deriveEffectiveProvisioningPrepareState({
@@ -2165,7 +2204,7 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
   const handleSubmit = (): void => {
     if (gatewayBindings.pending) return;
     if (submissionFence.busy || isSubmitting || launchInFlight) return;
-    if (runtimeSelectionUnresolved) {
+    if (runtimeSelectionUnresolved && !usesSavedTeamRuntime) {
       setLocalError('Choose a team provider before launching');
       return;
     }
@@ -2174,7 +2213,7 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
       setLocalError(validationErrors[0]);
       return;
     }
-    if (modelValidationError) {
+    if (modelValidationError && !usesSavedTeamRuntime) {
       setLocalError(modelValidationError);
       return;
     }
@@ -2273,7 +2312,22 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
           openTeamTab(effectiveTeamName, effectiveCwd || defaultProjectPath);
           closeDialog();
         } else {
-          // Schedule mode: create or update
+          // Whole-team schedules must use the saved team launch profile, never
+          // a legacy one-shot cwd or unsaved renderer project selection.
+          const savedTeam = usesSavedTeamRuntime ? await api.teams.getSavedRequest(effectiveTeamName) : null;
+          if (usesSavedTeamRuntime && (!savedTeam?.cwd?.trim() || !savedTeam.providerId)) {
+            throw new Error(t('launch.schedule.teamPathMissing'));
+          }
+          const oldPrompt = savedTeam?.prompt?.trim() ?? '';
+          const reviewedSavedPrompt = Boolean(oldPrompt && (
+            schedule?.reviewedSavedPrompt === true ||
+            (savedPromptReview?.teamName === effectiveTeamName &&
+              savedPromptReview.prompt === oldPrompt && savedPromptReview.confirmed)
+          ));
+          if (isTaskFirstSchedule && oldPrompt && !reviewedSavedPrompt) {
+            setSavedPromptReview({ teamName: effectiveTeamName, prompt: oldPrompt, confirmed: false });
+            return;
+          }
           const parsedBudget = maxBudgetUsd ? parseFloat(maxBudgetUsd) : undefined;
           const scheduleModel = resolvePersistedTeamModel({
             model: computeEffectiveTeamModel(
@@ -2298,46 +2352,59 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
             selectedProviderId === 'anthropic'
               ? (explicitScheduleEffort ?? anthropicRuntimeSelection?.defaultEffort ?? undefined)
               : explicitScheduleEffort;
-          const launchConfig: ScheduleLaunchConfig = {
-            cwd: effectiveCwd,
-            prompt: promptDraft.value.trim(),
-            providerId: selectedProviderId,
-            providerBackendId: selectedProviderBackendId,
-            model: scheduleModel,
-            effort: scheduleEffort,
-            fastMode:
-              selectedProviderId === 'anthropic' || selectedProviderId === 'codex'
-                ? selectedFastMode
-                : undefined,
-            resolvedFastMode:
-              selectedProviderId === 'anthropic'
+          // Preserve unchanged legacy runtime fields, including omitted options.
+          const launchConfig = resolveScheduleLaunchConfig({
+            schedule,
+            mode: scheduleExecutionMode,
+            taskFirst: isTaskFirstSchedule,
+            savedTeam,
+            edited: scheduleRuntimeEditedRef.current,
+            proposed: {
+              cwd: usesSavedTeamRuntime ? savedTeam?.cwd ?? '' : effectiveCwd,
+              prompt: promptDraft.value.trim(),
+              providerId: selectedProviderId,
+              providerBackendId: selectedProviderBackendId,
+              model: scheduleModel,
+              effort: scheduleEffort,
+              fastMode: selectedProviderId === 'anthropic' || selectedProviderId === 'codex'
+                ? selectedFastMode : undefined,
+              resolvedFastMode: selectedProviderId === 'anthropic'
                 ? (anthropicFastModeResolution?.resolvedFastMode ?? false)
                 : selectedProviderId === 'codex'
                   ? (codexFastModeResolution?.resolvedFastMode ?? false)
                   : undefined,
-            skipPermissions,
-          };
+              skipPermissions,
+            },
+          });
 
           if (isEditing && schedule) {
             const patch: UpdateSchedulePatch = {
+              ...(scheduleExecutionMode !== 'legacy'
+                ? { executionMode: scheduleExecutionMode, targetMember: scheduleTargetMember }
+                : {}),
               label: schedLabel.trim() || undefined,
               cronExpression: cronExpression.trim(),
               timezone,
-              warmUpMinutes,
-              maxTurns,
-              maxBudgetUsd: parsedBudget,
+              warmUpMinutes: scheduleExecutionMode === 'legacy' ? warmUpMinutes : 0,
+              maxTurns: isTaskFirstSchedule ? schedule.maxTurns : maxTurns,
+              maxBudgetUsd: isTaskFirstSchedule ? schedule.maxBudgetUsd : parsedBudget,
               launchConfig,
+              ...(reviewedSavedPrompt && { reviewedSavedPrompt: true as const }),
             };
             await updateSchedule(schedule.id, patch);
           } else {
             const input: CreateScheduleInput = {
               teamName: effectiveTeamName,
+              executionMode: scheduleExecutionMode === 'team' ? 'team' : 'agent',
+              ...(isTaskFirstSchedule ? { taskFirst: true as const } : {}),
+              ...(reviewedSavedPrompt && { reviewedSavedPrompt: true as const }),
+              targetMember: scheduleTargetMember,
               label: schedLabel.trim() || undefined,
               cronExpression: cronExpression.trim(),
               timezone,
-              warmUpMinutes,
-              maxTurns,
-              maxBudgetUsd: parsedBudget,
+              warmUpMinutes: scheduleExecutionMode === 'legacy' ? warmUpMinutes : 0,
+              maxTurns: isTaskFirstSchedule ? 50 : maxTurns,
+              maxBudgetUsd: isTaskFirstSchedule ? undefined : parsedBudget,
               launchConfig,
             };
             await createSchedule(input);
@@ -2387,7 +2454,7 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
       hasDuplicateLaunchMemberNames ||
       prepareBlocksLaunch ||
       teammateRuntimeCompatibility.blocksSubmission
-    : isSubmitting || validationErrors.length > 0 || !!modelValidationError;
+    : isSubmitting || ((isEditing || scheduleFormTouched) && validationErrors.length > 0) || (!usesSavedTeamRuntime && !!modelValidationError);
   const labelKeys = getLaunchDialogLabelKeys(isLaunchMode, isRelaunch, isEditing);
   const dialogTitle = t(labelKeys.title);
 
@@ -2415,7 +2482,6 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
 
   const submitLabel = t(labelKeys.submit);
   const submittingLabel = t(labelKeys.submitting);
-
   return (
     <Dialog
       open={open}
@@ -2425,6 +2491,7 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
         }
       }}
     >
+      <OpenCodeSourceDirectoryProvider enabled={open && isLaunchMode && multimodelEnabled} projectPath={effectiveCwd}>
       <DialogContent
         className={isSchedule ? 'max-h-[90vh] max-w-[52rem] overflow-y-auto' : 'max-w-[52rem]'}
       >
@@ -2433,7 +2500,6 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
           <DialogTitle className="text-sm">{dialogTitle}</DialogTitle>
           <DialogDescription className="text-xs">{dialogDescription}</DialogDescription>
         </DialogHeader>
-
         {isRelaunch ? (
           <div
             className="rounded-md border p-3 text-xs"
@@ -2452,7 +2518,6 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
             </div>
           </div>
         ) : null}
-
         {/* Launch-only: Conflict warning */}
         {isLaunchMode && conflictingTeam && !conflictDismissed ? (
           <div
@@ -2485,18 +2550,14 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
             </div>
           </div>
         ) : null}
-
         <div className="space-y-4">
-          {/* ═══════════════════════════════════════════════════════════════════
-              Schedule-only: Team selector (standalone mode)
-              ═══════════════════════════════════════════════════════════════════ */}
           {needsTeamSelector ? (
             <div className="space-y-1.5">
               <Label className="text-xs">{t('launch.schedule.team')}</Label>
               <Combobox
                 options={teamOptions}
                 value={selectedTeamName}
-                onValueChange={setSelectedTeamName}
+                onValueChange={(name) => { setSelectedTeamName(name); setScheduleFormTouched(true); setLocalError(null); }}
                 placeholder={t('launch.schedule.selectTeam')}
                 searchPlaceholder={t('launch.schedule.searchTeams')}
                 emptyMessage={
@@ -2545,72 +2606,34 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
             </div>
           ) : null}
 
-          {/* ═══════════════════════════════════════════════════════════════════
-              Schedule-only: Schedule configuration section
-              ═══════════════════════════════════════════════════════════════════ */}
           {isSchedule ? (
-            <div
-              className="rounded-lg border border-[var(--color-border-emphasis)] shadow-sm"
-              style={{
-                backgroundColor: isLight
-                  ? 'color-mix(in srgb, var(--color-surface-overlay) 24%, white 76%)'
-                  : 'var(--color-surface-overlay)',
-              }}
-            >
-              <button
-                type="button"
-                className="flex w-full items-center gap-1.5 px-3 py-2 text-left"
-                onClick={() => setSchedExpanded((v) => !v)}
-              >
-                {schedExpanded ? (
-                  <ChevronDown className="size-3.5 shrink-0 text-[var(--color-text-muted)]" />
-                ) : (
-                  <ChevronRight className="size-3.5 shrink-0 text-[var(--color-text-muted)]" />
-                )}
-                <span className="text-[11px] font-medium uppercase tracking-wider text-[var(--color-text-muted)]">
-                  {t('launch.schedule.title')}
-                </span>
-                {!schedExpanded && (schedLabel || cronExpression) ? (
-                  <span className="ml-auto truncate text-[11px] text-[var(--color-text-muted)] opacity-70">
-                    {schedLabel || cronExpression}
-                  </span>
-                ) : null}
-              </button>
-
-              {schedExpanded ? (
-                <div className="space-y-3 border-t border-[var(--color-border)] px-3 pb-3 pt-2">
-                  {/* Label */}
-                  <div className="space-y-1.5">
-                    <Label htmlFor="schedule-label" className="label-optional">
-                      {t('launch.schedule.labelOptional')}
-                    </Label>
-                    <Input
-                      id="schedule-label"
-                      className="h-8 text-xs"
-                      value={schedLabel}
-                      onChange={(e) => setSchedLabel(e.target.value)}
-                      placeholder={t('launch.schedule.labelPlaceholder')}
-                    />
-                  </div>
-
-                  {/* Cron + Timezone + Warmup */}
-                  <CronScheduleInput
-                    cronExpression={cronExpression}
-                    onCronExpressionChange={setCronExpression}
-                    timezone={timezone}
-                    onTimezoneChange={setTimezone}
-                    warmUpMinutes={warmUpMinutes}
-                    onWarmUpMinutesChange={setWarmUpMinutes}
-                  />
-                </div>
-              ) : null}
-            </div>
+            <SmartScheduleFields
+              isLight={isLight}
+              expanded={schedExpanded}
+              onToggle={() => setSchedExpanded((value) => !value)}
+              mode={scheduleExecutionMode}
+              taskFirst={isTaskFirstSchedule}
+              onModeChange={(mode) => { setScheduleExecutionMode(mode); setScheduleFormTouched(true); setLocalError(null); }}
+              targetMember={scheduleTargetMember}
+              onTargetMemberChange={(name) => { setScheduleTargetMember(name); setScheduleFormTouched(true); setLocalError(null); }}
+              team={teamByName[effectiveTeamName]}
+              label={schedLabel}
+              onLabelChange={setSchedLabel}
+              cronExpression={cronExpression}
+              onCronExpressionChange={(expression) => { setCronExpression(expression); setScheduleFormTouched(true); setLocalError(null); }}
+              timezone={timezone}
+              onTimezoneChange={(zone) => { setTimezone(zone); setScheduleFormTouched(true); setLocalError(null); }}
+              warmUpMinutes={warmUpMinutes}
+              onWarmUpMinutesChange={setWarmUpMinutes}
+            />
           ) : null}
 
-          {/* ═══════════════════════════════════════════════════════════════════
-              Shared: Working directory
-              ═══════════════════════════════════════════════════════════════════ */}
-          <ProjectPathSelector
+          {isTaskFirstSchedule && savedPromptReview?.teamName === effectiveTeamName ? (
+            <HistoricalPromptReview prompt={savedPromptReview.prompt} confirmed={savedPromptReview.confirmed}
+              onConfirmedChange={(confirmed) => setSavedPromptReview((current) => current && ({ ...current, confirmed }))} />
+          ) : null}
+
+          {!usesSavedTeamRuntime ? <ProjectPathSelector
             cwdMode={cwdMode}
             onCwdModeChange={setCwdMode}
             selectedProjectPath={selectedProjectPath}
@@ -2622,12 +2645,8 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
             projectsError={projectsError}
             onProjectsDropdownOpen={requestProjectListLoad}
             customFolder={customProjectFolder}
-          />
+          /> : null}
 
-          {/* ═══════════════════════════════════════════════════════════════════
-              Launch: optional settings
-              Schedule: prompt + execution defaults
-              ═══════════════════════════════════════════════════════════════════ */}
           {isLaunchMode ? (
             <OptionalSettingsSection
               title={
@@ -2862,9 +2881,13 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
                   minRows={4}
                   maxRows={12}
                   value={promptDraft.value}
-                  onValueChange={promptDraft.setValue}
+                  onValueChange={(value) => { promptDraft.setValue(value); setScheduleFormTouched(true); setLocalError(null); }}
                   suggestions={mentionSuggestions}
-                  projectPath={effectiveCwd || null}
+                  projectPath={
+                    usesSavedTeamRuntime
+                      ? teamByName[effectiveTeamName]?.projectPath || schedule?.launchConfig.cwd || null
+                      : effectiveCwd || null
+                  }
                   chips={chipDraft.chips}
                   onChipRemove={chipDraft.removeChip}
                   onFileChipInsert={chipDraft.addChip}
@@ -2877,37 +2900,15 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
                     ) : null
                   }
                 />
-                <p className="text-[11px] text-[var(--color-text-muted)]">
-                  {t('launch.prompt.oneShotPrefix')} <code className="font-mono">claude -p</code>{' '}
-                  {t('launch.prompt.oneShotSuffix')}
-                </p>
-                {selectedProviderId === 'anthropic' ? (
-                  <div className="flex gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] leading-relaxed text-amber-100">
-                    <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-                    <p>
-                      {t('launch.billing.prefix')} <code>claude -p</code>{' '}
-                      {t('launch.billing.suffix')}{' '}
-                      <a
-                        href={ANTHROPIC_AGENT_SDK_CREDIT_ARTICLE_URL}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 font-medium underline underline-offset-2 hover:text-white"
-                      >
-                        {t('launch.billing.readArticle')}
-                        <ExternalLink className="size-3" />
-                      </a>
-                      .
-                    </p>
-                  </div>
-                ) : null}
               </div>
-              <div>
+              {!usesSavedTeamRuntime ? <div>
                 <TeamModelSelector
                   providerId={selectedProviderId}
                   onProviderChange={setSelectedProviderId}
                   value={selectedModel}
                   limitContext={effectiveAnthropicRuntimeLimitContext}
                   onValueChange={setSelectedModel}
+                  onNormalizedValueChange={setSelectedModelRaw}
                   projectPath={effectiveCwd || null}
                   id="dialog-model"
                   disableGeminiOption={isGeminiUiFrozen()}
@@ -2977,14 +2978,11 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
                   checked={skipPermissions}
                   onCheckedChange={setSkipPermissions}
                 />
-              </div>
+              </div> : null}
             </>
           )}
 
-          {/* ═══════════════════════════════════════════════════════════════════
-              Schedule-only: Execution limits
-              ═══════════════════════════════════════════════════════════════════ */}
-          {isSchedule ? (
+          {isSchedule && !usesSavedTeamRuntime ? (
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <Label
@@ -3234,6 +3232,7 @@ export const LaunchTeamDialog = (props: LaunchTeamDialogProps): React.JSX.Elemen
           />
         </DialogFooter>
       </DialogContent>
+      </OpenCodeSourceDirectoryProvider>
       <ProvisioningProviderRuntimeSettingsDialog
         openProviderId={providerSettingsProviderId}
         onOpenProviderIdChange={(providerId) => setProviderSettingsProviderId(providerId)}

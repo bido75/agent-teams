@@ -1,8 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 
 import { useAppTranslation } from '@features/localization/renderer';
 import { Button } from '@renderer/components/ui/button';
-import { Checkbox } from '@renderer/components/ui/checkbox';
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from '@renderer/components/ui/dropdown-menu';
 import { Label } from '@renderer/components/ui/label';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/components/ui/tooltip';
 import { CUSTOM_ROLE, NO_ROLE } from '@renderer/constants/teamRoles';
@@ -12,7 +17,7 @@ import { getAvailableTeamEffortValue } from '@renderer/utils/teamEffortOptions';
 import { isTeamEffortLevel } from '@shared/utils/effortLevels';
 import { migrateProviderBackendId } from '@shared/utils/providerBackend';
 import { normalizeTeamMemberMcpPolicy } from '@shared/utils/teamMemberMcpPolicy';
-import { GitBranch, Plug, Plus } from 'lucide-react';
+import { Pencil, Plus, Settings2 } from 'lucide-react';
 
 import { MembersJsonEditor } from '../dialogs/MembersJsonEditor';
 
@@ -118,6 +123,7 @@ export interface MembersEditorSectionProps {
   >;
   onOpenCodeProviderScopedStatusChange?: TeamModelSelectorProps['onOpenCodeProviderScopedStatusChange'];
   onOpenProviderSettings?: TeamModelSelectorProps['onOpenProviderSettings'];
+  onManageProviders?: TeamModelSelectorProps['onManageProviders'];
   disableAddMember?: boolean;
   addMemberLockReason?: string;
   showWorktreeIsolationControls?: boolean;
@@ -177,6 +183,7 @@ export const MembersEditorSection = ({
   modelUnavailableReasonByProvider,
   onOpenCodeProviderScopedStatusChange,
   onOpenProviderSettings,
+  onManageProviders,
   disableAddMember = false,
   addMemberLockReason,
   showWorktreeIsolationControls = false,
@@ -427,7 +434,7 @@ export const MembersEditorSection = ({
   const newMemberUsesWorktree =
     allActiveMembersUseWorktrees || (activeMembers.length === 0 && teammateWorktreeDefault);
   const worktreeDefaultDisabled = Boolean(
-    worktreeIsolationDisabledReason && !allActiveMembersUseWorktrees
+    worktreeIsolationDisabledReason && !someActiveMembersUseWorktrees
   );
 
   const addMember = (): void => {
@@ -455,16 +462,7 @@ export const MembersEditorSection = ({
     () => buildMemberDraftColorMap(members, existingMembers, existingMemberColorMap),
     [members, existingMembers, existingMemberColorMap]
   );
-  const worktreeDefaultControlId = useMemo(
-    () =>
-      `teammate-worktree-default-${(draftKeyPrefix ?? 'default').replace(/[^a-zA-Z0-9_-]/g, '-')}`,
-    [draftKeyPrefix]
-  );
-  const agentTeamsMcpDefaultControlId = useMemo(
-    () =>
-      `teammate-agent-teams-mcp-default-${(draftKeyPrefix ?? 'default').replace(/[^a-zA-Z0-9_-]/g, '-')}`,
-    [draftKeyPrefix]
-  );
+  const worktreeDescriptionId = useId();
 
   const mentionSuggestions = useMemo(
     () => buildMemberDraftSuggestions(members, memberColorMap),
@@ -474,72 +472,102 @@ export const MembersEditorSection = ({
   const editorActions =
     !hideContent && !singleMemberMode ? (
       <div className="flex gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-1.5"
-          onClick={addMember}
-          disabled={disableAddMember}
-          title={disableAddMember ? addMemberLockReason : undefined}
-        >
-          <Plus className="size-3.5" />
-          {t('members.editor.addMember')}
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="size-8 p-0"
+                onClick={addMember}
+                disabled={disableAddMember}
+                aria-label={t('members.editor.addMember')}
+              >
+                <Plus className="size-3.5" aria-hidden="true" />
+              </Button>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent>
+            {disableAddMember && addMemberLockReason
+              ? addMemberLockReason
+              : t('members.editor.addMember')}
+          </TooltipContent>
+        </Tooltip>
         {showJsonEditor && !jsonEditorOpen ? (
-          <Button variant="ghost" size="sm" onClick={toggleJsonEditor}>
-            {t('members.editor.editAsJson')}
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="size-8 p-0"
+                onClick={toggleJsonEditor}
+                aria-label={t('members.editor.editAsJson')}
+              >
+                <Pencil className="size-3.5" aria-hidden="true" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{t('members.editor.editAsJson')}</TooltipContent>
+          </Tooltip>
         ) : null}
       </div>
     ) : null;
+  const memberSettingsLabel = `${t('members.editor.title')}: ${t('toolApproval.settings')}`;
   const masterRosterControls =
     showWorktreeIsolationControls && !singleMemberMode ? (
-      <>
-        {activeMembers.length > 0 ? (
-          <>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <div className="flex min-w-0 items-center gap-2">
-                  <Checkbox
-                    id={worktreeDefaultControlId}
-                    checked={teammateWorktreeDefaultChecked}
-                    disabled={worktreeDefaultDisabled}
-                    aria-describedby={`${worktreeDefaultControlId}-description`}
-                    onCheckedChange={(checked) => updateTeammateWorktreeDefault(checked === true)}
-                  />
-                  <Label
-                    htmlFor={worktreeDefaultControlId}
-                    className="flex min-w-0 cursor-pointer items-center gap-1.5 text-xs font-normal text-[var(--color-text-secondary)]"
-                  >
-                    {!isFlatRoster ? <GitBranch className="size-3.5 shrink-0" /> : null}
-                    <span className="truncate">{t('members.editor.runInSeparateWorktrees')}</span>
-                  </Label>
-                </div>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-sm text-xs">
+      <DropdownMenu>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="size-8 p-0"
+                aria-label={memberSettingsLabel}
+              >
+                <Settings2 className="size-3.5" aria-hidden="true" />
+              </Button>
+            </DropdownMenuTrigger>
+          </TooltipTrigger>
+          <TooltipContent>{memberSettingsLabel}</TooltipContent>
+        </Tooltip>
+        <DropdownMenuContent align="start" className="max-w-sm">
+          {activeMembers.length > 0 ? (
+            <>
+              <DropdownMenuCheckboxItem
+                checked={teammateWorktreeDefaultChecked}
+                aria-disabled={worktreeDefaultDisabled}
+                aria-describedby={worktreeDescriptionId}
+                className={worktreeDefaultDisabled ? 'cursor-not-allowed opacity-50' : undefined}
+                onCheckedChange={(checked) => {
+                  if (worktreeDefaultDisabled) return;
+                  updateTeammateWorktreeDefault(
+                    worktreeIsolationDisabledReason ? false : checked === true
+                  );
+                }}
+                onSelect={(event) => event.preventDefault()}
+              >
+                {t('members.editor.runInSeparateWorktrees')}
+              </DropdownMenuCheckboxItem>
+              <p
+                id={worktreeDescriptionId}
+                className="px-2 pb-1 pl-8 text-xs text-[var(--color-text-secondary)]"
+              >
                 {worktreeIsolationDisabledReason ?? t('members.editor.worktreeDescription')}
-              </TooltipContent>
-            </Tooltip>
-            <span id={`${worktreeDefaultControlId}-description`} className="sr-only">
-              {worktreeIsolationDisabledReason ?? t('members.editor.worktreeDescription')}
-            </span>
-          </>
-        ) : null}
-        <div className="flex shrink-0 items-center gap-2">
-          <Checkbox
-            id={agentTeamsMcpDefaultControlId}
+              </p>
+            </>
+          ) : null}
+          <DropdownMenuCheckboxItem
             checked={agentTeamsMcpLockedForAll}
             onCheckedChange={(checked) => updateAgentTeamsMcpLock(checked === true)}
-          />
-          <Label
-            htmlFor={agentTeamsMcpDefaultControlId}
-            className="flex cursor-pointer items-center gap-1.5 text-xs font-normal text-[var(--color-text-secondary)]"
+            onSelect={(event) => event.preventDefault()}
           >
-            {!isFlatRoster ? <Plug className="size-3.5 shrink-0" /> : null}
-            <span className="whitespace-nowrap">{t('members.editor.agentTeamsMcpOnly')}</span>
-          </Label>
-        </div>
-      </>
+            {t('members.editor.agentTeamsMcpOnly')}
+          </DropdownMenuCheckboxItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     ) : null;
 
   return (
@@ -583,10 +611,7 @@ export const MembersEditorSection = ({
             }
           >
             {showWorktreeIsolationControls && !isFlatRoster && !singleMemberMode ? (
-              <div
-                className="flex items-center justify-between gap-3 border-b border-[var(--color-border)] px-2.5 py-2"
-                title={worktreeIsolationDisabledReason ?? undefined}
-              >
+              <div className="flex items-center justify-between gap-3 border-b border-[var(--color-border)] px-2.5 py-2">
                 {masterRosterControls}
               </div>
             ) : null}
@@ -667,6 +692,7 @@ export const MembersEditorSection = ({
                   modelUnavailableReasonByProvider={modelUnavailableReasonByProvider}
                   onOpenCodeProviderScopedStatusChange={onOpenCodeProviderScopedStatusChange}
                   onOpenProviderSettings={onOpenProviderSettings}
+                  onManageProviders={onManageProviders}
                   providerReadyById={providerReadyById}
                   layoutVariant={layoutVariant}
                 />

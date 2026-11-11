@@ -110,6 +110,8 @@ export type TeamRuntimeControlCompatibilityApi = OpenCodeRuntimeControlApi;
 export interface TeamRuntimeApi {
   getRuntimeState(teamName: string): Promise<TeamRuntimeState>;
   stopTeam(teamName: string): Promise<void>;
+  /** Forget the background OpenCode lane stop backoff of a team moved to the trash. */
+  clearStoppedLaneStopBackoff(teamName: string): void;
   isTeamAlive(teamName: string): boolean;
   getAliveTeams(): string[];
   getCurrentRunId(teamName: string): string | null;
@@ -238,6 +240,8 @@ export interface TeamOpenCodeMemberInboxDelivery {
   visibleReplyCorrelation?: OpenCodeRuntimeDeliveryStatus['visibleReplyCorrelation'];
   queuedBehindMessageId?: string;
   reason?: string;
+  /** An armed wait for OpenCode bootstrap check-in, not a relay failure. */
+  deferredUntilBootstrap?: true;
   diagnostics?: string[];
   userVisibleImpact?: OpenCodeRuntimeDeliveryUserVisibleImpact;
 }
@@ -268,6 +272,11 @@ export interface TeamMessagingApi {
     messageId: string
   ): Promise<OpenCodeRuntimeDeliveryStatus | null>;
   resolveRuntimeRecipientProviderId(
+    teamName: string,
+    memberName: string
+  ): Promise<TeamProviderId | undefined>;
+  /** Explicit send command; may restore a verified live OpenCode recipient. */
+  resolveRuntimeRecipientProviderIdForUserSend(
     teamName: string,
     memberName: string
   ): Promise<TeamProviderId | undefined>;
@@ -496,6 +505,7 @@ export function bindTeamRuntimeApi(source: TeamRuntimeApi): TeamRuntimeApi {
   return {
     getRuntimeState: source.getRuntimeState.bind(source),
     stopTeam: source.stopTeam.bind(source),
+    clearStoppedLaneStopBackoff: source.clearStoppedLaneStopBackoff.bind(source),
     isTeamAlive: source.isTeamAlive.bind(source),
     getAliveTeams: source.getAliveTeams.bind(source),
     getCurrentRunId: source.getCurrentRunId.bind(source),
@@ -615,6 +625,8 @@ export function bindTeamMessagingApi(source: TeamMessagingApi): TeamMessagingApi
     relayLeadInboxMessages: source.relayLeadInboxMessages.bind(source),
     getOpenCodeRuntimeDeliveryStatus: source.getOpenCodeRuntimeDeliveryStatus.bind(source),
     resolveRuntimeRecipientProviderId: source.resolveRuntimeRecipientProviderId.bind(source),
+    resolveRuntimeRecipientProviderIdForUserSend:
+      source.resolveRuntimeRecipientProviderIdForUserSend.bind(source),
     getLiveLeadProcessMessages: source.getLiveLeadProcessMessages.bind(source),
     getCurrentLeadSessionId: source.getCurrentLeadSessionId.bind(source),
     pushLiveLeadProcessMessage: source.pushLiveLeadProcessMessage.bind(source),

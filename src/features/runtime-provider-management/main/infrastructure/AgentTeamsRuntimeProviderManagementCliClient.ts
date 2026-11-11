@@ -2,6 +2,7 @@ import { buildProviderAwareCliEnv } from '@main/services/runtime/providerAwareCl
 import { ClaudeBinaryResolver } from '@main/services/team/ClaudeBinaryResolver';
 import { execCli, killProcessTree, spawnCli } from '@main/utils/childProcess';
 import { resolveInteractiveShellEnvBestEffort } from '@main/utils/shellEnv';
+import { PROVIDER_CLI_TIMEOUT_MS as COMMAND_TIMEOUT_MS } from '@shared/constants/runtimeLoading';
 
 import { getRuntimeProviderConnectTimeoutMs as connectTimeoutMs } from '../../core/domain';
 
@@ -88,7 +89,6 @@ import type {
 import type { RuntimeProviderManagementPort } from '@features/runtime-provider-management/core/application';
 import type { ChildProcessWithoutNullStreams } from 'child_process';
 
-const COMMAND_TIMEOUT_MS = 90_000;
 // Outlive the runtime's provider callback window while bounded and cancellable from the UI.
 const OAUTH_COMMAND_TIMEOUT_MS = 17 * 60_000;
 const OAUTH_CANCEL_FORCE_KILL_DELAY_MS = 2_000;
@@ -1334,10 +1334,14 @@ export class AgentTeamsRuntimeProviderManagementCliClient implements RuntimeProv
     return response;
   }
 
-  private invalidateDirectoryResponseCache(): void {
+  private invalidateDirectoryResponseCache(preserveRefreshes = false): void {
     this.directoryResponseCacheGeneration += 1;
     this.directoryResponseCache.clear();
-    this.directoryResponseInFlight.clear();
+    for (const key of this.directoryResponseInFlight.keys()) {
+      if (!preserveRefreshes || !key.startsWith('refresh:')) {
+        this.directoryResponseInFlight.delete(key);
+      }
+    }
   }
 
   private getModelResponseCacheKey(
@@ -1549,7 +1553,7 @@ export class AgentTeamsRuntimeProviderManagementCliClient implements RuntimeProv
       if (existingRefresh) {
         return existingRefresh;
       }
-      this.invalidateDirectoryResponseCache();
+      this.invalidateDirectoryResponseCache(true);
       // A catalog refresh should make the next model picker read fresh data,
       // but it must not turn an already-visible model load into an AbortError.
       this.invalidateModelResponseCache(false);

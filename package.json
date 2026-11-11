@@ -1,9 +1,9 @@
 {
   "name": "agent-teams-ai",
   "type": "module",
-  "version": "2.17.10",
+  "version": "2.18.7",
   "dynamicFlags": {
-    "showSponsorFluxion": true
+    "showSponsorFluxion": false
   },
   "description": "Desktop app for managing AI agent teams, reviews, runtime logs, and provider-aware workflows",
   "license": "AGPL-3.0",
@@ -188,6 +188,7 @@
     "@radix-ui/react-tooltip": "^1.2.8",
     "@sentry/electron": "^7.10.0",
     "@sentry/react": "^10.45.0",
+    "@tanstack/react-table": "9.3.1",
     "@tanstack/react-virtual": "^3.13.24",
     "@terminal-platform/design-tokens": "file:vendor/terminal-platform/sdk/terminal-platform-design-tokens-0.1.0.tgz",
     "@terminal-platform/foundation": "file:vendor/terminal-platform/sdk/terminal-platform-foundation-0.1.0.tgz",
@@ -287,7 +288,7 @@
     "@vitest/coverage-v8": "^3.2.5",
     "autoprefixer": "^10.4.17",
     "better-sqlite3-node": "npm:better-sqlite3@12.10.1",
-    "electron": "^44.9.3",
+    "electron": "^44.10.1",
     "electron-builder": "26.17.0",
     "electron-vite": "^5.0.0",
     "eslint": "^9.39.4",
@@ -365,7 +366,23 @@
       },
       {
         "from": "resources/runtime",
-        "to": "runtime"
+        "to": "runtime",
+        "filter": [
+          "**/*",
+          "!**/agent-teams-opencode-v2-support-*.zip",
+          "!**/opencode-v2-engine-manifest.json"
+        ]
+      },
+      {
+        "from": "resources/git",
+        "to": "git",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/MANAGED_GIT_THIRD_PARTY.md",
+        "to": "MANAGED_GIT_THIRD_PARTY.md"
       },
       {
         "from": "resources/terminal-platform",

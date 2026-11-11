@@ -200,6 +200,21 @@ vi.mock(
   }
 );
 
+// These fixtures model teams of this app profile; ownership itself is covered by
+// TeamProvisioningServiceProfileOwnership.test.ts.
+vi.mock(
+  '@main/services/team/provisioning/TeamProvisioningProfileOwnership',
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import('@main/services/team/provisioning/TeamProvisioningProfileOwnership')
+    >()),
+    createTeamProfileOwnership: () => ({
+      isManagedByThisProfile: () => Promise.resolve(true),
+      isManagedByThisProfileSync: () => true,
+    }),
+  })
+);
+
 import {
   killTmuxPaneForCurrentPlatformSync,
   listRuntimeProcessTableForCurrentPlatform,
@@ -1245,6 +1260,8 @@ function createClaudeLogsRun(overrides: Record<string, unknown> = {}) {
     memberSpawnStatuses: new Map(),
     activeCrossTeamReplyHints: [],
     pendingInboxRelayCandidates: [],
+    pendingLeadSendMessages: new Map(),
+    leadSendMessageSeq: 0,
     pendingApprovals: new Map(),
     mcpConfigPath: null,
     bootstrapSpecPath: null,
@@ -10819,7 +10836,7 @@ describe('TeamProvisioningService', () => {
       expect(observeMessageDelivery).toHaveBeenCalledTimes(1);
     }, 10_000);
 
-    it('resolves stored attachment payloads for OpenCode inbox relay before delivery', async () => {
+    it('passes stored OpenCode attachment payloads without committing unread lead replies', async () => {
       const resolveInputDeclaration = vi
         .fn<ResolveOpenCodeInputDeclaration>()
         .mockImplementation(({ projectPath, model }) =>
@@ -10849,7 +10866,8 @@ describe('TeamProvisioningService', () => {
         responseObservation: {
           state: 'responded_plain_text',
           deliveredUserMessageId: 'oc-user-attachment',
-          assistantMessageId: 'oc-assistant-attachment',
+          // This fixture tests attachment transport, not a transcript-backed reply.
+          assistantMessageId: null,
           toolCallNames: [],
           visibleMessageToolCallId: null,
           visibleReplyMessageId: null,
@@ -10908,10 +10926,14 @@ describe('TeamProvisioningService', () => {
         })
       ).resolves.toMatchObject({
         attempted: 1,
-        delivered: 1,
+        delivered: 0,
         failed: 0,
-        relayed: 1,
+        relayed: 0,
       });
+      // The runtime accepted the image input, but the clipped preview alone
+      // is not evidence that the lead received a complete answer.
+      const stored = JSON.parse(await fsPromises.readFile(path.join(inboxDir, 'bob.json'), 'utf8')) as { read: boolean }[];
+      expect(stored[0]?.read).toBe(false);
       expect(resolveInputDeclaration).toHaveBeenCalledWith({
         projectPath: '/repo',
         model: 'openai/gpt-5.4-mini',
@@ -12309,7 +12331,7 @@ describe('TeamProvisioningService', () => {
       expect(sendMessageToMember).toHaveBeenCalledTimes(1);
     });
 
-    it('accepts observed visible OpenCode user replies for lead-delegated inbox messages', async () => {
+    it('keeps a lead relay pending if the observed reply reached only the user', async () => {
       const svc = new TeamProvisioningService();
       const sendMessageToMember = vi.fn(async (input: Record<string, unknown>) => ({
         ok: true,
@@ -12320,7 +12342,9 @@ describe('TeamProvisioningService', () => {
         responseObservation: {
           state: 'responded_visible_message',
           deliveredUserMessageId: 'oc-user-1',
-          assistantMessageId: 'oc-assistant-1',
+          // This fixture has a user-directed tool receipt, not a canonical
+          // assistant transcript that can be safely replayed to the lead.
+          assistantMessageId: null,
           toolCallNames: ['message_send'],
           visibleMessageToolCallId: 'call-1',
           visibleReplyMessageId: 'reply-user-1',
@@ -12413,11 +12437,11 @@ describe('TeamProvisioningService', () => {
       ).resolves.toMatchObject({
         delivered: true,
         accepted: true,
-        responsePending: false,
+        responsePending: true,
         responseState: 'responded_visible_message',
         visibleReplyMessageId: 'reply-user-1',
         visibleReplyCorrelation: 'relayOfMessageId',
-        diagnostics: ['visible_message_sent'],
+        diagnostics: ['opencode_delivery_response_pending'],
       });
       expect(sendMessageToMember).toHaveBeenCalledTimes(1);
       expect(sendMessageToMember).toHaveBeenCalledWith(
@@ -14132,19 +14156,20 @@ describe('TeamProvisioningService', () => {
         ]),
       };
 
-      await expect(
-        svc.deliverOpenCodeMemberMessage(teamName, {
-          memberName: 'bob',
-          text: 'must wait for committed bootstrap evidence',
-          messageId: 'msg-live-lane-without-committed-evidence',
-        })
-      ).resolves.toMatchObject({
+      const result = await svc.deliverOpenCodeMemberMessage(teamName, {
+        memberName: 'bob',
+        text: 'must wait for committed bootstrap evidence',
+        messageId: 'msg-live-lane-without-committed-evidence',
+      });
+      expect(result).toMatchObject({
         delivered: false,
         reason: 'opencode_runtime_not_active',
         diagnostics: [
           expect.stringContaining('OpenCode runtime bootstrap is not confirmed for bob'),
         ],
       });
+      // This setup arms no bootstrap wake, so the deferral stays unflagged and still warns.
+      expect(result).not.toHaveProperty('deferredUntilBootstrap');
       expect(sendMessageToMember).not.toHaveBeenCalled();
     });
 
@@ -14205,19 +14230,20 @@ describe('TeamProvisioningService', () => {
         sessions: [],
       });
 
-      await expect(
-        svc.deliverOpenCodeMemberMessage(teamName, {
-          memberName: 'bob',
-          text: 'must wait for bootstrap',
-          messageId: 'msg-before-bootstrap-checkin',
-        })
-      ).resolves.toMatchObject({
+      const result = await svc.deliverOpenCodeMemberMessage(teamName, {
+        memberName: 'bob',
+        text: 'must wait for bootstrap',
+        messageId: 'msg-before-bootstrap-checkin',
+      });
+      expect(result).toMatchObject({
         delivered: false,
         reason: 'opencode_runtime_not_active',
         diagnostics: [
           expect.stringContaining('OpenCode runtime bootstrap is not confirmed for bob'),
         ],
       });
+      // This setup arms no bootstrap wake, so the deferral stays unflagged and still warns.
+      expect(result).not.toHaveProperty('deferredUntilBootstrap');
       expect(sendMessageToMember).not.toHaveBeenCalled();
       await expect(readOpenCodeRuntimeLaneIndex(tempTeamsBase, teamName)).resolves.toMatchObject({
         lanes: {
@@ -14297,19 +14323,20 @@ describe('TeamProvisioningService', () => {
         'utf8'
       );
 
-      await expect(
-        svc.deliverOpenCodeMemberMessage(teamName, {
-          memberName: 'bob',
-          text: 'must not deliver to empty durable lane',
-          messageId: 'msg-stale-empty-manifest',
-        })
-      ).resolves.toMatchObject({
+      const result = await svc.deliverOpenCodeMemberMessage(teamName, {
+        memberName: 'bob',
+        text: 'must not deliver to empty durable lane',
+        messageId: 'msg-stale-empty-manifest',
+      });
+      expect(result).toMatchObject({
         delivered: false,
         reason: 'opencode_runtime_not_active',
         diagnostics: [
           expect.stringContaining('runtime manifest has no committed runtime evidence'),
         ],
       });
+      // Evidence not ready is not the armed bootstrap wait: it must keep warning.
+      expect(result).not.toHaveProperty('deferredUntilBootstrap');
       expect(sendMessageToMember).not.toHaveBeenCalled();
       await expect(readOpenCodeRuntimeLaneIndex(tempTeamsBase, teamName)).resolves.toMatchObject({
         lanes: {
@@ -14390,19 +14417,20 @@ describe('TeamProvisioningService', () => {
         'utf8'
       );
 
-      await expect(
-        svc.deliverOpenCodeMemberMessage(teamName, {
-          memberName: 'bob',
-          text: 'wait until runtime check-in',
-          messageId: 'msg-fresh-empty-manifest',
-        })
-      ).resolves.toMatchObject({
+      const result = await svc.deliverOpenCodeMemberMessage(teamName, {
+        memberName: 'bob',
+        text: 'wait until runtime check-in',
+        messageId: 'msg-fresh-empty-manifest',
+      });
+      expect(result).toMatchObject({
         delivered: false,
         reason: 'opencode_runtime_not_active',
         diagnostics: [
           expect.stringContaining('OpenCode runtime bootstrap evidence is not ready for bob'),
         ],
       });
+      // Evidence not ready is not the armed bootstrap wait: it must keep warning.
+      expect(result).not.toHaveProperty('deferredUntilBootstrap');
       expect(sendMessageToMember).not.toHaveBeenCalled();
       await expect(readOpenCodeRuntimeLaneIndex(tempTeamsBase, teamName)).resolves.toMatchObject({
         lanes: {
@@ -21019,7 +21047,7 @@ describe('TeamProvisioningService', () => {
             prepare: vi.fn(),
             launch: adapterLaunch,
             reconcile: vi.fn(),
-            stop: vi.fn(),
+            stop: vi.fn(async (input: TeamRuntimeStopInput) => successfulRuntimeStop(input)),
           } as any,
         ])
       );
@@ -21087,7 +21115,7 @@ describe('TeamProvisioningService', () => {
             prepare: vi.fn(),
             launch: adapterLaunch,
             reconcile: vi.fn(),
-            stop: vi.fn(),
+            stop: vi.fn(async (input: TeamRuntimeStopInput) => successfulRuntimeStop(input)),
           } as any,
         ])
       );
@@ -28072,6 +28100,14 @@ describe('TeamProvisioningService', () => {
     const worktreeGitDir = path.join(repoDir, '.git', 'worktrees', 'alice');
     fs.mkdirSync(worktreeDir, { recursive: true });
     fs.mkdirSync(worktreeGitDir, { recursive: true });
+    // A real Git repository and linked worktree have HEAD/config metadata.
+    // Empty .git directories are intentionally not promoted to trusted roots.
+    fs.writeFileSync(path.join(repoDir, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    fs.writeFileSync(path.join(repoDir, '.git', 'config'), '[core]\n');
+    fs.writeFileSync(path.join(worktreeGitDir, 'HEAD'), 'ref: refs/heads/main\n');
+    fs.writeFileSync(path.join(repoDir, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8');
+    fs.writeFileSync(path.join(repoDir, '.git', 'config'), '[core]\n', 'utf8');
+    fs.writeFileSync(path.join(worktreeGitDir, 'HEAD'), 'ref: refs/heads/main\n', 'utf8');
     fs.writeFileSync(path.join(worktreeDir, '.git'), `gitdir: ${worktreeGitDir}\n`, 'utf8');
     fs.writeFileSync(path.join(worktreeGitDir, 'commondir'), '../..\n', 'utf8');
     fs.writeFileSync(

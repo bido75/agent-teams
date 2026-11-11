@@ -941,7 +941,7 @@ describe('ClaudeMultimodelBridgeService', () => {
     });
     expect(providers[2]).toMatchObject({
       providerId: 'opencode',
-      displayName: 'OpenCode (200+ models)',
+      displayName: 'OpenCode (200+ providers)',
       supported: false,
       authenticated: false,
       models: [],
@@ -1315,6 +1315,37 @@ describe('ClaudeMultimodelBridgeService', () => {
       // The service resolves the project cwd before spawning the catalog probe.
       expect.objectContaining({ cwd: path.resolve('/tmp/local-model-project') })
     );
+  });
+
+  it('gives a project-scoped OpenCode full status the runtime loading budget', async () => {
+    execCliMock.mockImplementation((_binaryPath, args, options) =>
+      Promise.reject(
+        new Error(`Command timed out after ${options?.timeout}ms: /mock/runtime ${args.join(' ')}`)
+      )
+    );
+
+    const { ClaudeMultimodelBridgeService } =
+      await import('@main/services/runtime/ClaudeMultimodelBridgeService');
+    const service = new ClaudeMultimodelBridgeService();
+
+    const provider = await service.getProviderStatus('/mock/runtime', 'opencode', undefined, {
+      projectPath: '/tmp/slow-opencode-project',
+    });
+
+    expect(provider).toMatchObject({
+      providerId: 'opencode',
+      statusCheckOutcome: 'transient_error',
+      statusCheckErrorCode: 'timeout',
+      capabilities: { teamLaunch: false },
+    });
+    // The runtime allows this read 180 s plus its own cleanup.
+    expect(execCliMock.mock.calls.map((call) => [call[1].join(' '), call[2]?.timeout])).toEqual([
+      ['runtime status --json --provider opencode', 240_000],
+    ]);
+    expect(vi.mocked(console.warn).mock.calls.map((call) => call.join(' '))).toEqual([
+      expect.stringContaining('Provider-scoped full runtime status unavailable for opencode'),
+    ]);
+    vi.mocked(console.warn).mockClear();
   });
 
   it('coalesces concurrent project-scoped status reads across bridge consumers', async () => {
@@ -2161,7 +2192,7 @@ describe('ClaudeMultimodelBridgeService', () => {
     ).toBe(90_000);
   });
 
-  it('coalesces repeated single-provider catalog hydration while one is in flight', async () => {
+  it('serializes replaced catalog reads and publishes only the newest provider status', async () => {
     let resolveHydration!: (value: { stdout: string; stderr: string; exitCode: number }) => void;
     const hydration = new Promise<{ stdout: string; stderr: string; exitCode: number }>(
       (resolve) => {
@@ -2301,18 +2332,15 @@ describe('ClaudeMultimodelBridgeService', () => {
     await vi.waitFor(() => {
       expect(secondUpdate).toHaveBeenCalledTimes(1);
     });
-    expect(fullStatusCalls).toBe(1);
-    expect(firstUpdate).toHaveBeenCalledTimes(1);
+    // A newer provider check supersedes the first generation. Reusing its
+    // already-started result would publish obsolete credentials/model evidence.
+    expect(fullStatusCalls).toBe(2);
+    expect(firstUpdate).not.toHaveBeenCalled();
     expect(secondUpdate.mock.calls[0]?.[0]).toMatchObject({
       authenticated: false,
       authMethod: null,
-      statusMessage: 'Full status reports logged out',
+      statusMessage: 'Fresh full status',
       capabilities: { teamLaunch: false },
-      modelCatalogRefreshState: 'error',
-      modelCatalog: {
-        defaultModelId: 'gpt-5.4',
-        status: 'stale',
-      },
     });
   });
 

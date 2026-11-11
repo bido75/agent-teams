@@ -1132,6 +1132,7 @@ export default interface Resources {
         "claudeConnected": "Connected through your local Claude CLI session.",
         "claudeDescription": "Use your Claude plan through the Claude CLI.",
         "cliNotInstalled": "CLI not installed",
+        "cliSignedInRequiresV1": "CLI signed in; OpenCode V1 required",
         "codexConnected": "Connected through your local Codex CLI session.",
         "codexDescription": "Use your ChatGPT plan through the Codex CLI.",
         "connectAllPlans": "Connect all my plans",
@@ -1186,6 +1187,7 @@ export default interface Resources {
         "refreshOpenCode": "Refresh status",
         "regionNotSelected": "Region not selected",
         "requiresOpenCode": "Requires OpenCode",
+        "requiresV1": "Requires OpenCode V1",
         "retryInstall": "Retry installation",
         "retryOpenCode": "Repair OpenCode",
         "setupModelEndpoint": "Local model or endpoint",
@@ -1199,6 +1201,13 @@ export default interface Resources {
         "unavailable": "Unavailable",
         "updateForSuperGrok": "Update OpenCode for OAuth",
         "updateOpenCode": "Update OpenCode",
+        "v1CheckedUsingV2": "Confirmed for OpenCode V1 (you are using V2)",
+        "v1CheckedUsingV2Detail": "This connection is supported on OpenCode V1. You are using V2; test your chosen model before using it.",
+        "v2CliPluginLimitation": "Agent Teams has not verified this CLI plugin with OpenCode V2. Signing in does not confirm model access. Use OpenCode V1.",
+        "v2ConnectedUnverified": "Connected; V2 model not verified",
+        "v2OAuthLimitation": "This subscription OAuth connection is not supported by Agent Teams on OpenCode V2 yet. Use OpenCode V1; saved credentials remain unchanged.",
+        "v2Unverified": "V2 model not verified",
+        "v2UnverifiedDetail": "Sign-in and model listings do not prove execution on OpenCode V2. Test the selected model.",
         "xaiApiConnected": "xAI API connected - not SuperGrok",
         "xiaomiBaseUrlHint": "Copy either the OpenAI-compatible /v1 URL or the Anthropic-compatible /anthropic URL. Your API key is entered securely in the next step.",
         "xiaomiBaseUrlLabel": "Dedicated Base URL",
@@ -1231,6 +1240,14 @@ export default interface Resources {
         "overrideSelection": "An explicit OpenCode binary override is active. Remove it to use an app-managed installation.",
         "retryInstall": "Retry install",
         "update": "Update",
+        "v2ReinstallCancel": "Cancel",
+        "v2ReinstallConfirm": "Check and restore",
+        "v2ReinstallDescription": "These files let Agent Teams work with OpenCode V2. This is optional if everything is working normally.",
+        "v2ReinstallEffect": "We will check the files and download a new copy only if needed. Your installed OpenCode and provider connections will stay unchanged.",
+        "v2SupportFiles": "OpenCode V2 setup",
+        "v2SupportInstall": "Finish OpenCode V2 setup",
+        "v2SupportRepair": "Reinstall V2 support",
+        "v2SupportRequiredDetail": "Download the remaining files once to connect providers and use models.",
         "v2Unavailable": "Compatible V2 is not available for this platform. V1 remains available."
       },
       "sponsorship": {
@@ -2646,7 +2663,46 @@ export default interface Resources {
             "system": "System"
           }
         },
-        "title": "Appearance"
+        "title": "Appearance",
+        "customThemes": {
+          "label": "Custom themes",
+          "description": "Use named JSON color palettes based on Dark or Light.",
+          "none": "Built-in theme",
+          "edit": "Edit JSON",
+          "localOnly": "Themes, UI zoom and typography are saved only on this browser/device.",
+          "editor": {
+            "title": "Edit custom themes (JSON)",
+            "description": "Edit up to 8 named themes. Colors must be #RRGGBB; Save applies only valid JSON. Use an empty themes array to remove all themes.",
+            "cancel": "Cancel",
+            "save": "Save themes",
+            "conflict": "Themes changed in another tab. Your JSON draft is preserved; review it or explicitly overwrite the newer themes.",
+            "overwrite": "Overwrite newer themes",
+            "invalidJson": "Invalid JSON syntax",
+            "invalidTheme": "Invalid theme palette. Check the fields, colors, and contrast."
+          }
+        },
+        "uiScale": {
+          "label": "Interface scale",
+          "description": "Scale the entire app without changing the operating system or browser zoom.",
+          "reset": "Reset"
+        },
+        "fontFamily": {
+          "label": "UI font",
+          "description": "Choose a locally installed font for the interface. Editors and terminals keep their own fonts.",
+          "system": "System default",
+          "other": "Other font…",
+          "placeholder": "Installed font family",
+          "apply": "Apply",
+          "discover": "Find installed fonts",
+          "loaded": "Installed fonts added to the menu.",
+          "unavailable": "Font discovery is unavailable here. Enter a font name manually.",
+          "empty": "No installed fonts were found. Enter a font name manually."
+        },
+        "textSize": {
+          "label": "Text size",
+          "description": "Change interface text without changing the overall UI zoom.",
+          "reset": "Reset"
+        }
       },
       "browserAccess": {
         "serverMode": {
@@ -3458,6 +3514,10 @@ export default interface Resources {
         "testCancelUnsupported": "Stopping tests is not supported by this runtime.",
         "testCancelled": "Test stopped.",
         "testInProgress": "Model test is already running.",
+        "freeQuotaReached": "OpenRouter’s daily limit for free models has been reached.",
+        "paidRetryNotice": "If the daily free-model limit is reached, this test will automatically retry once with gpt-oss-20b. That request uses your OpenRouter balance.",
+        "paidRetryRunning": "Free-model limit reached. Testing gpt-oss-20b using your OpenRouter balance…",
+        "paidRetryResult": "Paid retry with gpt-oss-20b",
         "testingElapsed": "Waiting for test result... {{seconds}}s",
         "useInTeamPicker": "Save for team picker",
         "validationContextRequired": "Select a validation context above to enable Test and Set default. Saving for team picker only stores the route for new teams."
@@ -3881,6 +3941,7 @@ export default interface Resources {
     },
     "create": {
       "actions": {
+        "backToTeams": "Back to teams",
         "create": "Create",
         "creating": "Creating...",
         "openExisting": "Open Existing Team",
@@ -3901,6 +3962,11 @@ export default interface Resources {
       "description": {
         "copy": "Create a new team based on an existing one.",
         "create": "Set up your team and choose how it starts."
+      },
+      "draft": {
+        "continue": "Continue creating",
+        "replace": "Replace draft",
+        "replaceConfirmation": "You have an unfinished team draft. Starting this action will replace it. Continue?"
       },
       "errors": {
         "createConfigFailed": "Failed to create team config",
@@ -3945,6 +4011,7 @@ export default interface Resources {
         "groupOrRootHelp": "Choose a group, or keep the organization root.",
         "groupOrRootLabel": "Group or root",
         "groupOrRootPlaceholder": "Root or group",
+        "invalidSelection": "Choose a valid organization and destination before creating the team.",
         "kind": {
           "group": "Group",
           "root": "Root"
@@ -3957,6 +4024,11 @@ export default interface Resources {
       "placeholders": {
         "description": "Brief description of the team purpose",
         "prompt": "Instructions for the team lead during provisioning..."
+      },
+      "placementFailure": {
+        "acknowledge": "Got it",
+        "message": "Team {{teamName}} was created. Assign it from the Organization Map; do not create it again.",
+        "title": "Team created, but not added to the organization"
       },
       "prepare": {
         "checkingProviders": "Checking selected providers...",
@@ -4391,10 +4463,13 @@ export default interface Resources {
       "board": {
         "addTask": "Add task",
         "columnsView": "Columns view",
+        "configureColumns": "Choose columns",
         "gridView": "Grid view",
         "hiddenCount": "{{count}} hidden",
         "noTasks": "No tasks",
+        "resizeColumn": "Resize {{column}}",
         "showMore": "Show {{count}} more",
+        "tableView": "Table view",
         "trash": "Trash"
       },
       "columns": {
@@ -4562,17 +4637,33 @@ export default interface Resources {
         "title": "Relaunch will restart the current team run"
       },
       "schedule": {
+        "agentDescription": "When the team is off, runs an isolated agent. When live, creates an assigned task.",
+        "execution": "Execution",
+        "historicalPromptAcknowledged": "I've reviewed the saved prompt and separated any lasting instructions. Keep the old prompt, but never run it for scheduled work.",
+        "historicalPromptReviewRequired": "Review the team's saved one-time instructions before scheduling. Clear or separate the old launch prompt first.",
         "labelOptional": "Label (optional)",
         "labelPlaceholder": "e.g., Daily code review, Nightly tests...",
+        "leadDefault": "Team lead (default)",
+        "legacyNotice": "Existing one-shot schedule — saving keeps its current behavior.",
         "maxBudgetUsd": "Max budget (USD)",
         "maxTurns": "Max turns",
         "noLimit": "No limit",
         "noMatches": "No teams match your search.",
         "noTeams": "No teams available. Create a team first.",
+        "oneAgent": "One agent",
         "searchTeams": "Search teams...",
         "selectTeam": "Select a team...",
+        "target": "Target when team is running",
+        "taskFirstAgentDescription": "The selected teammate receives a board task after the team is safely started, if needed. Busy agents are not interrupted.",
+        "taskFirstTarget": "Assign to",
+        "taskFirstTeamDescription": "The team lead receives a coordination task after the team is safely started, if needed. Existing work is not interrupted.",
+        "taskFirstWholeTeam": "Via team lead",
         "team": "Team",
-        "title": "Schedule"
+        "teamDescription": "Starts the saved team if stopped; otherwise assigns a task to its lead. Uses saved team provider and project settings.",
+        "teamPathMissing": "The team needs a saved project folder before scheduling a launch.",
+        "title": "Schedule",
+        "upgradeSmart": "Switch to smart scheduling",
+        "wholeTeam": "Whole team"
       },
       "title": {
         "createSchedule": "Create Schedule",
@@ -5194,6 +5285,7 @@ export default interface Resources {
         "minimum": "Select at least two agents.",
         "name": "Chat name",
         "recipient": "To {{name}}",
+        "deliveryUnconfirmed": "Delivery not confirmed for {{names}}",
         "recipientRestartHint": "{{name}} must be running a compatible runtime before sending.",
         "restartHint": "All participants must be running a compatible runtime before sending.",
         "restore": "Restore chat",
@@ -6319,6 +6411,7 @@ export default interface Resources {
       "title": "Running Teams"
     },
     "schedule": {
+      "actionFailed": "Schedule action failed",
       "actions": {
         "addSchedule": "Add Schedule",
         "delete": "Delete",
@@ -6348,6 +6441,8 @@ export default interface Resources {
           "mondayAtNine": "Monday at 9am",
           "weekdaysAtNine": "Weekdays at 9am"
         },
+        "noTimezones": "No matching timezones",
+        "searchTimezone": "Search timezones...",
         "selectTimezone": "Select timezone",
         "timezone": "Timezone",
         "warmUpDescription": "Prepares selected providers before scheduled execution",
@@ -6360,6 +6455,7 @@ export default interface Resources {
         },
         "warmUpTime": "Warm-up time"
       },
+      "deleteConfirmation": "Delete schedule \"{{label}}\"? Its run history will also be removed.",
       "empty": {
         "description": "Create a schedule to run team tasks automatically on a cron schedule.",
         "title": "No schedules yet"
@@ -6374,17 +6470,21 @@ export default interface Resources {
         "errors": "Errors",
         "exitCode": "exit {{code}}",
         "loadingLogs": "Loading logs...",
+        "openTask": "Open task",
         "retryCount": "retry {{count}}/{{max}}",
         "stillRunning": "Task is still running...",
         "title": "Run Log"
       },
+      "runRequested": "Run requested. Check history to see whether work was handed off.",
       "runStatus": {
         "cancelled": "Cancelled",
         "completed": "Completed",
+        "dispatched": "Dispatched",
         "failed": "Failed",
         "interrupted": "Interrupted",
         "pending": "Pending",
         "running": "Running",
+        "skipped": "Skipped",
         "warm": "Warm",
         "warmingUp": "Warming up"
       },

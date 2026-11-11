@@ -66,9 +66,15 @@ export function useOpenCodeConnectedModelCatalog(input: {
   projectPath: string | null;
   passiveProviderStatus: CliProviderStatus | null;
   refreshRevision?: number;
+  /** Stable within the selected project/status context; success is display-only. */
+  onCatalogRecovery?: (receipt: { projectPath: string | null; freshUntil: string | null }) => void;
 }) {
   const [revision, setRevision] = useState(0);
-  const lastRefresh = useRef({ revision, external: input.refreshRevision });
+  const lastRefresh = useRef({
+    revision,
+    external: input.refreshRevision,
+    recovery: input.onCatalogRecovery,
+  });
   const scope = JSON.stringify([input.projectPath]);
   const [state, setState] = useState<CatalogState>({
     scope: '',
@@ -95,8 +101,13 @@ export function useOpenCodeConnectedModelCatalog(input: {
     if (!input.enabled) return;
     const refreshRequested =
       lastRefresh.current.revision !== revision ||
-      lastRefresh.current.external !== input.refreshRevision;
-    lastRefresh.current = { revision, external: input.refreshRevision };
+      lastRefresh.current.external !== input.refreshRevision ||
+      lastRefresh.current.recovery !== input.onCatalogRecovery;
+    lastRefresh.current = {
+      revision,
+      external: input.refreshRevision,
+      recovery: input.onCatalogRecovery,
+    };
     const request = ++sequence.current;
     const requestGroupId = `dashboard-connected-catalog:${++nextRequest}`;
     const activeGroups = new Set<string>();
@@ -170,6 +181,7 @@ export function useOpenCodeConnectedModelCatalog(input: {
         entries.map((entry) => [entry.providerId.trim().toLowerCase(), entry] as const)
       );
       let sourceIndex = 0;
+      let recoveryFreshUntil: string | null = null;
       const loadNext = async () => {
         while (current() && sourceIndex < sources.length) {
           if (!(await waitForStatus())) return;
@@ -185,6 +197,15 @@ export function useOpenCodeConnectedModelCatalog(input: {
               refreshRequested
             );
             if (!current()) return;
+            if (
+              source === 'opencode' &&
+              catalog.catalogState === 'fresh' &&
+              Date.parse(catalog.freshUntil ?? '') > Date.now()
+            ) {
+              // Status recovery can invalidate the shared model cache. Defer it
+              // until every connected source has finished its in-flight read.
+              recoveryFreshUntil = catalog.freshUntil ?? null;
+            }
             loadedModels.push(...catalog.models);
             if (catalog.catalogState === 'stale') {
               loadErrors.push(
@@ -226,6 +247,9 @@ export function useOpenCodeConnectedModelCatalog(input: {
             loadedModels.length > 0 || loadErrors.length === 0 ? loadedModels : retainedModels,
           errors: loadErrors,
         });
+        if (recoveryFreshUntil) {
+          input.onCatalogRecovery?.({ projectPath: input.projectPath, freshUntil: recoveryFreshUntil });
+        }
       }
     })()
       .catch((error: unknown) => {
@@ -252,7 +276,14 @@ export function useOpenCodeConnectedModelCatalog(input: {
             .catch(() => undefined);
       }
     };
-  }, [input.enabled, input.projectPath, input.refreshRevision, revision, scope]);
+  }, [
+    input.enabled,
+    input.onCatalogRecovery,
+    input.projectPath,
+    input.refreshRevision,
+    revision,
+    scope,
+  ]);
 
   const providerStatus = useMemo(() => {
     const passive = input.passiveProviderStatus;

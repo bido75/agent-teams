@@ -2,6 +2,7 @@ import { WorkingDirectoryMissingError } from '@main/utils/cliWorkingDirectory';
 import { isMissingDirectory } from '@main/utils/directoryPresence';
 import { execCliWithOpenCodeRecovery as execCli } from '@main/utils/openCodeNodeModulesJunction';
 import { resolveInteractiveShellEnvBestEffort, waitForPendingShellEnv } from '@main/utils/shellEnv';
+import { OPENCODE_LOADING_TIMEOUT_MS } from '@shared/constants/runtimeLoading';
 import { createLogger } from '@shared/utils/logger';
 import { createDefaultCliExtensionCapabilities } from '@shared/utils/providerExtensionCapabilities';
 import { mkdtemp, readFile, rm } from 'fs/promises';
@@ -37,6 +38,7 @@ import {
   readRuntimeStatusCommand,
   RuntimeStatusCommandError,
 } from './runtimeStatusCommandDiagnostics';
+import { resolveRuntimeStatusExecutionContext } from './runtimeStatusExecutionContext';
 
 import type {
   CliProviderId,
@@ -50,6 +52,10 @@ import type {
 const logger = createLogger('ClaudeMultimodelBridgeService');
 
 const PROVIDER_STATUS_TIMEOUT_MS = 90_000;
+// The runtime gives a full OpenCode status read the shared loading allowance and
+// then cleans up the server it owns. Stopping it earlier throws that work away,
+// so the next read starts cold again.
+const OPENCODE_FULL_STATUS_TIMEOUT_MS = OPENCODE_LOADING_TIMEOUT_MS + 60_000;
 const PROVIDER_STATUS_SUMMARY_TIMEOUT_MS = 30_000;
 const CODEX_PROVIDER_STATUS_SUMMARY_TIMEOUT_MS = 15_000;
 const SOURCE_PROVIDER_STATUS_SUMMARY_TIMEOUT_MS = 45_000;
@@ -678,21 +684,6 @@ export class ClaudeMultimodelBridgeService {
     providerIds: readonly CliProviderId[],
     projectPath?: string | null
   ): number {
-    if (providerIds.length === 1) {
-      const hydrationKey = this.getProviderStatusHydrationKey(
-        binaryPath,
-        providerIds[0],
-        projectPath
-      );
-      const currentGeneration = this.providerStatusHydrationGenerations.get(hydrationKey);
-      if (
-        currentGeneration !== undefined &&
-        this.providerStatusHydrationInFlight.has(hydrationKey)
-      ) {
-        return currentGeneration;
-      }
-    }
-
     const generation = ++this.providerStatusHydrationGeneration;
     for (const providerId of providerIds) {
       this.providerStatusHydrationGenerations.set(
@@ -844,6 +835,9 @@ export class ClaudeMultimodelBridgeService {
           : PROVIDER_STATUS_SUMMARY_TIMEOUT_MS;
       return Math.min(options.timeoutMs ?? PROVIDER_STATUS_SUMMARY_TIMEOUT_MS, fallbackTimeout);
     }
+    if (providerId === 'opencode' && !options.summary && options.timeoutMs === undefined) {
+      return OPENCODE_FULL_STATUS_TIMEOUT_MS;
+    }
     return (
       options.timeoutMs ??
       (options.summary ? PROVIDER_STATUS_SUMMARY_TIMEOUT_MS : PROVIDER_STATUS_TIMEOUT_MS)
@@ -916,14 +910,18 @@ export class ClaudeMultimodelBridgeService {
           })
         : Promise.resolve(null);
 
+    const context = await resolveRuntimeStatusExecutionContext(
+      providerId,
+      getProviderStatusCommandCwd(options.projectPath)
+    );
     const modelListPromise = execCli(
       binaryPath,
-      ['model', 'list', '--json', '--provider', providerId],
+      ['model', 'list', '--json', '--provider', providerId, ...context.projectArgs],
       {
         timeout: PROVIDER_MODELS_TIMEOUT_MS,
         maxBuffer: PROVIDER_MODELS_MAX_BUFFER_BYTES,
         env,
-        cwd: getProviderStatusCommandCwd(options.projectPath),
+        cwd: context.cwd,
       }
     );
 
@@ -1216,10 +1214,15 @@ export class ClaudeMultimodelBridgeService {
     connectionIssues: Partial<Record<CliProviderId, string>>,
     options: { summary?: boolean; timeoutMs?: number; projectPath?: string | null } = {}
   ): Promise<CliProviderStatus> {
+    const context = await resolveRuntimeStatusExecutionContext(
+      providerId,
+      getProviderStatusCommandCwd(options.projectPath)
+    );
     const args = ['runtime', 'status', '--json', '--provider', providerId];
     if (options.summary) {
       args.push('--summary');
     }
+    args.push(...context.projectArgs);
     const timeout = this.getProviderStatusRuntimeTimeout(binaryPath, providerId, options);
     const parsed = await readRuntimeStatusCommand(
       binaryPath,
@@ -1228,9 +1231,11 @@ export class ClaudeMultimodelBridgeService {
         timeout,
         maxBuffer: PROVIDER_STATUS_MAX_BUFFER_BYTES,
         env,
-        cwd: getProviderStatusCommandCwd(options.projectPath),
+        cwd: context.cwd,
       },
-      extractJsonObject<UnifiedRuntimeStatusResponse>
+      extractJsonObject<UnifiedRuntimeStatusResponse>,
+      undefined,
+      getProviderStatusCommandCwd(options.projectPath)
     );
     const mappedProvider = this.applyConnectionIssue(
       this.mapRuntimeProviderStatus(providerId, parsed.providers?.[providerId]),
@@ -1268,46 +1273,53 @@ export class ClaudeMultimodelBridgeService {
     const existing = providerStatusReadInFlight.get(requestKey);
     if (existing) return existing;
 
-    const request = (async () => {
-      if (shouldResolveAnthropicShellEnv(providerId)) {
-        await resolveInteractiveShellEnvBestEffort({
-          source: 'provider-status:anthropic',
-          timeoutMs: 1_500,
-          fallbackEnv: process.env,
+    const request = Promise.resolve()
+      .then(async () => {
+        if (shouldResolveAnthropicShellEnv(providerId)) {
+          await resolveInteractiveShellEnvBestEffort({
+            source: 'provider-status:anthropic',
+            timeoutMs: 1_500,
+            fallbackEnv: process.env,
+          });
+          // Catalog hydration can finish discovery in the background after the bounded summary.
+          if (options.summary !== true) await waitForPendingShellEnv();
+        }
+        const { env: passiveEnv, connectionIssues } = buildPassiveProviderStatusCliEnv({
+          binaryPath,
+          providerId,
         });
-        // Catalog hydration can finish discovery in the background after the bounded summary.
-        if (options.summary !== true) await waitForPendingShellEnv();
-      }
-      const { env: passiveEnv, connectionIssues } = buildPassiveProviderStatusCliEnv({
-        binaryPath,
-        providerId,
+        const env = await providerConnectionService.applyPassiveProviderStatusConnectionEnv(
+          passiveEnv,
+          providerId
+        );
+        if (providerId === 'anthropic' && options.summary !== true) {
+          await providerConnectionService.applyAnthropicCompatibleCatalogStatusConnectionEnv(env);
+        }
+        const status = await this.getProviderStatusFromRuntimeStatusCommand(
+          binaryPath,
+          providerId,
+          env,
+          connectionIssues,
+          options
+        );
+        if (
+          canReuseCompletedRead &&
+          status.statusCheckOutcome === 'authoritative' &&
+          // Installation/invalidation can detach this read before its subprocess finishes.
+          providerStatusReadInFlight.get(requestKey) === request
+        ) {
+          providerStatusReadCache.set(requestKey, {
+            expiresAt: Date.now() + OPENCODE_PROJECT_STATUS_CACHE_TTL_MS,
+            status,
+          });
+        }
+        return status;
+      })
+      .finally(() => {
+        if (providerStatusReadInFlight.get(requestKey) === request) {
+          providerStatusReadInFlight.delete(requestKey);
+        }
       });
-      const env = await providerConnectionService.applyPassiveProviderStatusConnectionEnv(
-        passiveEnv,
-        providerId
-      );
-      if (providerId === 'anthropic' && options.summary !== true) {
-        await providerConnectionService.applyAnthropicCompatibleCatalogStatusConnectionEnv(env);
-      }
-      const status = await this.getProviderStatusFromRuntimeStatusCommand(
-        binaryPath,
-        providerId,
-        env,
-        connectionIssues,
-        options
-      );
-      if (canReuseCompletedRead && status.statusCheckOutcome === 'authoritative') {
-        providerStatusReadCache.set(requestKey, {
-          expiresAt: Date.now() + OPENCODE_PROJECT_STATUS_CACHE_TTL_MS,
-          status,
-        });
-      }
-      return status;
-    })().finally(() => {
-      if (providerStatusReadInFlight.get(requestKey) === request) {
-        providerStatusReadInFlight.delete(requestKey);
-      }
-    });
     providerStatusReadInFlight.set(requestKey, request);
     return request;
   }
@@ -1620,14 +1632,15 @@ export class ClaudeMultimodelBridgeService {
       }
     }
 
+    // OpenCode's passive summary intentionally omits authentication and its
+    // model catalog. A project-scoped launch check needs the exact catalog,
+    // otherwise a healthy installed CLI is misclassified as runtime_missing.
+    const summary = providerId !== 'opencode' || !projectPath;
     const generation = this.beginProviderStatusHydration(binaryPath, [providerId], projectPath);
     let backgroundHydrationOwnsGenerationCleanup = false;
     try {
       const provider = await this.getProviderStatusFromScopedRuntimeStatus(binaryPath, providerId, {
-        // OpenCode's passive summary intentionally omits authentication and its
-        // model catalog. A project-scoped launch check needs the exact catalog,
-        // otherwise a healthy installed CLI is misclassified as runtime_missing.
-        summary: providerId !== 'opencode' || !projectPath,
+        summary,
         projectPath,
       });
       if (projectPath && canHydrateProviderCatalog(provider)) {
@@ -1714,9 +1727,9 @@ export class ClaudeMultimodelBridgeService {
       }
       return provider;
     } catch (error) {
-      const summaryStatusError = error instanceof Error ? error.message : String(error);
+      const statusError = error instanceof Error ? error.message : String(error);
       logger.warn(
-        `Provider-scoped summary runtime status unavailable for ${providerId}; returning scoped degraded status without fallback: ${summaryStatusError}`
+        `Provider-scoped ${summary ? 'summary' : 'full'} runtime status unavailable for ${providerId}; returning scoped degraded status without fallback: ${statusError}`
       );
       return createRuntimeStatusErrorProviderStatus(providerId, error);
     } finally {

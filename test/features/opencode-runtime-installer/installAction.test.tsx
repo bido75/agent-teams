@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { OpenCodeV2InstallAction } from '@features/opencode-runtime-installer/renderer';
+import { getRuntimeInstallLabel } from '@renderer/components/dashboard/runtimeInstallActionUi';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { OpenCodeRuntimeStatus } from '@shared/types';
@@ -16,6 +17,52 @@ function render(status: OpenCodeRuntimeStatus): string {
 }
 
 describe('V2 installation choice', () => {
+  it('labels the first-time primary install as OpenCode V1', () => {
+    const t = ((key: string) => key) as Parameters<typeof getRuntimeInstallLabel>[1];
+    const label = getRuntimeInstallLabel(
+      { installed: false, source: 'missing', state: 'idle', compatibleV2Version: '2.1.4' },
+      t
+    );
+    expect(label).toBe('cliStatus.runtimeInstall.install OpenCode V1');
+  });
+  it('labels a failed first-time OpenCode installation as retry', () => {
+    const t = ((key: string) => key) as Parameters<typeof getRuntimeInstallLabel>[1];
+    expect(
+      getRuntimeInstallLabel(
+        { installed: false, source: 'missing', state: 'failed', compatibleV2Version: '2.1.4' },
+        t
+      )
+    ).toBe('cliStatus.runtimeInstall.retryInstall');
+  });
+  it.each(['required', 'ready'] as const)(
+    'exposes support-only install/repair for native V2 with %s availability',
+    (v2Support) => {
+      const markup = render({
+        installed: true,
+        source: 'override',
+        state: 'ready',
+        version: '2.9.0',
+        v2Support,
+        compatibleV2Version: '2.1.4',
+      });
+      expect(markup).toContain(v2Support === 'required' ? 'v2SupportInstall' : 'v2SupportRepair');
+      expect(markup).toContain('<button');
+    }
+  );
+
+  it('offers no V2 support action when the native platform has no qualified engine', () => {
+    expect(
+      render({
+        installed: true,
+        source: 'path',
+        state: 'idle',
+        version: '2.9.0',
+        v2Support: 'required',
+        compatibleV2Version: null,
+      })
+    ).toBe('');
+  });
+
   it('offers the pinned V2 only for an unsupported installed runtime', () => {
     expect(
       render({
@@ -37,7 +84,7 @@ describe('V2 installation choice', () => {
       }
     }
   );
-  it('explains override selection and an unqualified platform without a misleading V2 action', () => {
+  it('explains override selection without promoting V2 for new installs', () => {
     const override = render({
       installed: true,
       source: 'override',
@@ -47,13 +94,18 @@ describe('V2 installation choice', () => {
     });
     expect(override).toContain('overrideSelection');
     expect(override).not.toContain('<button');
+    expect(
+      render({ installed: false, source: 'override', state: 'failed', compatibleV2Version: null })
+    ).toContain('overrideSelection');
     const unsupported = render({
       installed: false,
       source: 'missing',
       state: 'idle',
       compatibleV2Version: null,
     });
-    expect(unsupported).toContain('v2Unavailable');
-    expect(unsupported).not.toContain('<button');
+    expect(unsupported).toBe('');
+    expect(
+      render({ installed: false, source: 'missing', state: 'idle', compatibleV2Version: '2.1.4' })
+    ).toBe('');
   });
 });

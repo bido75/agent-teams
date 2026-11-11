@@ -4,7 +4,24 @@ import { spawnSync } from 'node:child_process';
 import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { readPendingArtifact } from './catalog.mjs';
+import {
+  catalogRefreshEvidence,
+  clickControl,
+  enterProviderSettings,
+  readPendingArtifact,
+  verifyCatalog,
+  waitForReadyCatalog,
+} from './catalog.mjs';
+import { waitForPackagedRefreshPreparation } from './packaged.mjs';
+import {
+  assertSettledDirectoryPage,
+  qualifyCatalogReadExpectation,
+  qualifySettings,
+  qualifyUIRefresh,
+  settingsRefreshFailure,
+  settingsRefreshSettled,
+  waitForSettledDirectory,
+} from './packaged-verify.mjs';
 
 test('catalog fixture subprocess returns four sources, failures, partial models and recovery; refuses mutations', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-diagnostics-e2e-catalog-test-'));
@@ -62,6 +79,81 @@ test('catalog fixture subprocess returns four sources, failures, partial models 
         if (value.models) assert.equal(value.models.models[0].providerId, source);
       }
     }
+    // Real subprocess fixture contract: first 100/all, following page, then
+    // connected-only. The host is connected but excluded by the UI count policy.
+    await writeFile(path.join(root, 'scenario'), 'connected-summary');
+    const directoryArgs = [
+      'runtime', 'providers', 'directory', '--runtime', 'opencode', '--json',
+      '--summary', '--filter', 'all', '--limit', '100',
+    ];
+    const firstPage = run(directoryArgs);
+    assert.equal(firstPage.status, 0, firstPage.stderr);
+    const first = JSON.parse(firstPage.stdout).directory;
+    assert.equal(first.totalCount, 105);
+    assert.equal(first.returnedCount, 100);
+    assert.equal(first.entries.length, 100);
+    assert.equal(first.filter, 'all');
+    assert.equal(first.cursor, null);
+    assert.equal(first.nextCursor, '100');
+    assert.equal(first.entries.filter((entry) => entry.state === 'connected').length, 0);
+
+    const secondPage = run([...directoryArgs, '--cursor', first.nextCursor]);
+    assert.equal(secondPage.status, 0, secondPage.stderr);
+    const second = JSON.parse(secondPage.stdout).directory;
+    assert.equal(second.totalCount, 105);
+    assert.equal(second.returnedCount, 5);
+    assert.equal(second.cursor, '100');
+    assert.equal(second.nextCursor, null);
+    assert.equal(second.entries.filter((entry) => entry.state === 'available').length, 0);
+    assert.equal(second.entries.filter((entry) => entry.state === 'connected').length, 5);
+    assert.deepEqual(
+      [...first.entries, ...second.entries].map((entry) => entry.providerId),
+      [
+        ...Array.from({ length: 100 }, (_, index) =>
+          `fixture-available-${String(index).padStart(3, '0')}`),
+        'opencode', 'anthropic', 'google', 'openrouter', 'fixture-connected',
+      ]
+    );
+
+    // The real Windows startup-cleanup path requests a 250-row summary.
+    // This is read-only and must not appear as a forbidden mutation.
+    const startupDirectory = run([
+      'runtime', 'providers', 'directory', '--runtime', 'opencode', '--json',
+      '--summary', '--filter', 'all', '--limit', '250',
+    ]);
+    assert.equal(startupDirectory.status, 0, startupDirectory.stderr);
+    const startupPage = JSON.parse(startupDirectory.stdout).directory;
+    assert.equal(startupPage.totalCount, 105);
+    assert.equal(startupPage.returnedCount, 105);
+    assert.equal(startupPage.nextCursor, null);
+
+    const connectedPage = run([
+      'runtime', 'providers', 'directory', '--runtime', 'opencode', '--json',
+      '--summary', '--filter', 'connected', '--limit', '100',
+    ]);
+    assert.equal(connectedPage.status, 0, connectedPage.stderr);
+    const connected = JSON.parse(connectedPage.stdout).directory;
+    assert.equal(connected.filter, 'connected');
+    assert.equal(connected.totalCount, 5);
+    assert.equal(connected.returnedCount, 5);
+    assert.equal(connected.cursor, null);
+    assert.equal(connected.nextCursor, null);
+    assert.deepEqual(connected.entries.map((entry) => entry.providerId), [
+      'opencode', 'anthropic', 'google', 'openrouter', 'fixture-connected',
+    ]);
+    assert(connected.entries.every((entry) => entry.state === 'connected'));
+
+    for (const invalid of [
+      [...directoryArgs, '--filter', 'connected'],
+      [...directoryArgs, '--cursor', '../not-a-cursor'],
+      [...directoryArgs, '--cursor', '01'],
+      ['runtime', 'providers', 'directory', '--runtime', 'opencode', '--json',
+        '--filter', 'unknown'],
+      ['runtime', 'providers', 'directory', '--runtime', 'opencode', '--json',
+        '--limit', '0'],
+      ['runtime', 'providers', 'directory', '--runtime', 'opencode', '--json',
+        '--limit', '251'],
+    ]) assert.equal(run(invalid).status, 64);
     for (const args of [
       ['runtime', 'status', '--json', '--summary', '--provider', 'opencode'],
       ['runtime', 'status', '--json', '--provider', 'opencode', '--summary'],
@@ -113,6 +205,250 @@ test('catalog fixture subprocess returns four sources, failures, partial models 
   }
 });
 
+const catalogSources = ['opencode', 'anthropic', 'google', 'openrouter'];
+function refreshTimeline({
+  scenario = 'delayed8s',
+  base = 100,
+  firstPid = 1,
+  summary = true,
+} = {}) {
+  let at = base;
+  let pid = firstPid;
+  const calls = [];
+  const pair = (args, operation, source = null, duration = 1) => {
+    const start = { event: 'start', scenario, pid: pid++, at: at++, args };
+    const response = {
+      event: 'response',
+      scenario,
+      pid: start.pid,
+      at: (at += duration),
+      operation,
+      source,
+      failed: false,
+      ...(operation === 'models' ? { response: { models: { catalogState: 'fresh' } } } : {}),
+    };
+    calls.push(start, response);
+  };
+  if (summary)
+    pair(
+      ['runtime', 'status', '--json', '--provider', 'opencode', '--summary'],
+      'status',
+      null,
+      8000
+    );
+  pair(['runtime', 'providers', 'directory', '--runtime', 'opencode', '--summary'], 'directory');
+  for (const source of catalogSources)
+    pair(
+      ['runtime', 'providers', 'models', '--runtime', 'opencode', '--provider', source],
+      'models',
+      source
+    );
+  return calls;
+}
+
+test('catalog completion requires its own summary then a complete fresh directory/model cycle', () => {
+  const calls = refreshTimeline();
+  const options = { requireSummary: true };
+  assert(catalogRefreshEvidence(calls, options));
+  assert.equal(catalogRefreshEvidence(calls.slice(0, 1), options), null);
+  assert.equal(catalogRefreshEvidence(calls.slice(2), options), null);
+  // Earlier model reads (even successful ones) cannot complete a later summary refresh.
+  const previous = refreshTimeline({ summary: false });
+  const summary = refreshTimeline({ base: 200, firstPid: 20 }).slice(0, 2);
+  assert.equal(catalogRefreshEvidence([...previous, ...summary], options), null);
+  assert.equal(catalogRefreshEvidence([...summary.slice(0, 1), ...previous], options), null);
+  // A response from an older in-flight model request cannot count after the directory.
+  const mixed = structuredClone(calls);
+  const oldModel = mixed.splice(4, 1)[0];
+  mixed.splice(2, 0, oldModel);
+  assert.equal(catalogRefreshEvidence(mixed, options), null);
+  for (const mutate of [
+    (events) => {
+      events.at(-1).failed = true;
+    },
+    (events) => {
+      events.at(-1).response.models.catalogState = 'stale';
+    },
+    (events) => {
+      events.at(-1).source = 'foreign';
+    },
+    (events) => {
+      events.at(-1).scenario = 'ready';
+    },
+    (events) => {
+      events.at(-1).pid = 999;
+    },
+    (events) => {
+      events[1].operation = 'directory';
+    },
+  ]) {
+    const invalid = structuredClone(calls);
+    mutate(invalid);
+    assert.equal(catalogRefreshEvidence(invalid, options), null);
+  }
+});
+
+test('filtered count requests cannot replace the fresh unfiltered catalog generation', () => {
+  const all = refreshTimeline({ summary: true });
+  const last = all.at(-1);
+  const filteredStart = {
+    event: 'start', scenario: 'delayed8s', pid: 200,
+    at: last.at + 1,
+    args: ['runtime', 'providers', 'directory', '--runtime', 'opencode',
+      '--json', '--summary', '--filter', 'connected', '--limit', '100'],
+  };
+  const filteredResponse = {
+    event: 'response', scenario: 'delayed8s', pid: 200,
+    at: last.at + 2, operation: 'directory', source: null, failed: false,
+    response: { directory: {
+      runtimeId: 'opencode', filter: 'connected', totalCount: 4,
+      returnedCount: 4, cursor: null, nextCursor: null,
+    } },
+  };
+  const evidence = catalogRefreshEvidence(
+    [...all, filteredStart, filteredResponse],
+    { requireSummary: true }
+  );
+  assert(evidence, 'Completed model catalog should survive a later count-only read');
+  assert.notEqual(evidence.directory.start.pid, 200);
+  assert.equal(evidence.models.length, 4);
+});
+
+test('catalog pairing uses the latest preceding start when Windows reuses a PID', () => {
+  const calls = refreshTimeline();
+  const model = calls.at(-2);
+  const reused = { ...model, args: ['--version'], at: model.at + 1 };
+  assert.equal(
+    catalogRefreshEvidence([...calls.slice(0, -1), reused, calls.at(-1)], { requireSummary: true }),
+    null
+  );
+  // Reuse after a completed request does not destroy its original paired response.
+  assert(
+    catalogRefreshEvidence([...calls, { ...reused, at: calls.at(-1).at + 1 }], {
+      requireSummary: true,
+    })
+  );
+});
+
+test('ready drains old requests then performs its own summary/catalog recovery before fixture change', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-ready-catalog-test-'));
+  try {
+    const initial = refreshTimeline({ scenario: 'ready', summary: false });
+    // The second directory overtakes the already-started first model. This old
+    // generation can drain without ever forming a fresh latest-directory cycle.
+    const secondDirectory = refreshTimeline({ scenario: 'ready', summary: false, firstPid: 50 })
+      .slice(0, 2)
+      .map((event) => ({ ...event, at: initial[2].at + 1 }));
+    const calls = [...initial.slice(0, 3), ...secondDirectory, ...initial.slice(3)];
+    assert.equal(catalogRefreshEvidence(calls), null);
+    const file = path.join(root, 'calls.ndjson');
+    const save = (events) =>
+      writeFile(file, events.map((e) => JSON.stringify(e)).join('\n') + '\n');
+    await save(calls.slice(0, -1));
+    let completed = false;
+    let clicks = 0;
+    let probe = false;
+    const waiting = waitForReadyCatalog({
+      root,
+      started: 100,
+      send: async (method, params) => {
+        if (method === 'Page.captureScreenshot') return { data: '' };
+        if (method === 'Input.dispatchMouseEvent' && params.type === 'mouseReleased') {
+          clicks++;
+          await save([
+            ...calls,
+            ...refreshTimeline({ scenario: 'ready', base: Date.now() + 100, firstPid: 20 }),
+          ]);
+        }
+        return {};
+      },
+      evaluate: async (expression) => {
+        if (expression.startsWith('(() => { const b')) return { x: 1, y: 1 };
+        if (expression === 'document.body.innerText') return 'Fixture OpenCode model';
+        if (expression === 'navigator.clipboard.readText()') return '';
+        // The previous overlapping generation's warning remains until a real refresh.
+        if (expression.includes('opencode-catalog-error')) return clicks ? '' : 'cached models';
+        if (expression.startsWith('window.__catalogProbe =')) {
+          probe = true;
+          return;
+        }
+        if (expression === 'window.__catalogProbe')
+          return { done: probe, value: { schemaVersion: 1 } };
+        throw new Error(`Unexpected expression: ${expression}`);
+      },
+    }).then(() => {
+      completed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(completed, false, 'Ready must not finish with an in-flight model request');
+    assert.equal(clicks, 0, 'Do not start the recovery refresh before old requests drain');
+    await save(calls);
+    await waiting;
+    assert.equal(completed, true);
+    assert.equal(clicks, 1, 'Recover with exactly one real UI refresh');
+    assert.deepEqual(
+      JSON.parse(await readFile(path.join(root, 'ready-catalog-subprocess.json'), 'utf8')),
+      calls
+    );
+    assert(
+      catalogRefreshEvidence(
+        JSON.parse(await readFile(path.join(root, 'ready-subprocess.json'), 'utf8')),
+        { requireSummary: true }
+      )
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('real catalog verifier waits past old models and unfinished summary for the post-summary refresh', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-delayed-catalog-test-'));
+  try {
+    const base = Date.now() + 100;
+    const old = refreshTimeline({ base, summary: false });
+    const current = refreshTimeline({ base: base + 100, firstPid: 20 });
+    let reads = 0;
+    let probe = false;
+    await writeFile(
+      path.join(root, 'calls.ndjson'),
+      [...old, current[0]].map((event) => JSON.stringify(event)).join('\n')
+    );
+    await verifyCatalog({
+      root,
+      scenario: 'delayed8s',
+      send: async (method) => (method === 'Page.captureScreenshot' ? { data: '' } : {}),
+      evaluate: async (expression) => {
+        if (expression.startsWith('(() => { const b')) return { x: 1, y: 1 };
+        if (expression === 'navigator.clipboard.readText()') return '';
+        if (expression === 'document.body.innerText') {
+          reads++;
+          const events = reads === 1 ? [...old, ...current.slice(0, 2)] : [...old, ...current];
+          await writeFile(
+            path.join(root, 'calls.ndjson'),
+            events.map((event) => JSON.stringify(event)).join('\n')
+          );
+          return 'Fixture OpenCode model';
+        }
+        if (expression.includes('opencode-catalog-error')) return '';
+        if (expression.startsWith('window.__catalogProbe =')) {
+          probe = true;
+          return;
+        }
+        if (expression === 'window.__catalogProbe')
+          return { done: probe, value: { schemaVersion: 1 } };
+        throw new Error(`Unexpected expression: ${expression}`);
+      },
+    });
+    assert.equal(reads, 3, 'Old models and summary-only completion must each continue polling');
+    const observed = JSON.parse(
+      await readFile(path.join(root, 'delayed8s-subprocess.json'), 'utf8')
+    );
+    assert(catalogRefreshEvidence(observed, { requireSummary: true }));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('delayed summary exercises runtime status budget, not directory latency', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-diagnostics-e2e-summary-test-'));
   try {
@@ -159,4 +495,378 @@ test('pending artifacts tolerate absence, preserve content and surface other rea
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test(
+  'catalog waits through duplicate and failed model responses for four distinct successful sources',
+  { timeout: 10000 },
+  async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'opencode-catalog-readiness-TEST-'));
+    const scenario = 'catalog-retry';
+    let bodyReads = 0;
+    const calls = [];
+    const saveCalls = () =>
+      writeFile(
+        path.join(root, 'calls.ndjson'),
+        calls.map((call) => JSON.stringify(call)).join('\n') + '\n'
+      );
+    let nextPid = 10;
+    const model = (source, failed = false) => {
+      const pid = nextPid++, at = Date.now();
+      return [
+        { event: 'start', scenario, pid, at,
+          args: ['runtime', 'providers', 'models', '--runtime', 'opencode', '--provider', source] },
+        { event: 'response', operation: 'models', scenario, pid, source, failed, at,
+          response: { models: { catalogState: 'fresh' } } },
+      ];
+    };
+    try {
+      await verifyCatalog({
+        root,
+        scenario,
+        evaluate: async (expression) => {
+          if (expression.startsWith('(() => { const b =')) {
+            calls.push(
+              {
+                event: 'start',
+                scenario,
+                pid: 1, at: Date.now(),
+                args: ['runtime', 'providers', 'directory', '--runtime', 'opencode', '--summary'],
+              },
+              { event: 'response', scenario, pid: 1, at: Date.now(), operation: 'directory', failed: false },
+              ...model('anthropic'),
+              ...model('opencode'),
+              ...model('anthropic'),
+              ...model('google')
+            );
+            await saveCalls();
+            return { x: 1, y: 1 };
+          }
+          if (expression === 'document.body.innerText') {
+            bodyReads += 1;
+            // First add a failed fourth source; only its later successful response may finish the wait.
+            if (bodyReads <= 2) {
+              calls.push(...model('openrouter', bodyReads === 1));
+              await saveCalls();
+            }
+            return 'Fixture opencode model';
+          }
+          if (expression === 'navigator.clipboard.readText()') return '';
+          if (expression === 'window.__catalogProbe')
+            return { done: true, value: { schemaVersion: 1 } };
+          if (expression.startsWith('window.__catalogProbe =')) return undefined;
+          if (expression.includes('opencode-catalog-error')) return '';
+          throw new Error(`Unexpected catalog probe: ${expression}`);
+        },
+        send: async (method) => {
+          assert(['Input.dispatchMouseEvent', 'Page.captureScreenshot'].includes(method));
+          return method === 'Page.captureScreenshot' ? { data: '' } : {};
+        },
+      });
+      assert.equal(bodyReads, 3, 'Duplicate or failed source responses ended polling early');
+      const captured = JSON.parse(
+        await readFile(path.join(root, `${scenario}-subprocess.json`), 'utf8')
+      );
+      assert.deepEqual(
+        [
+          ...new Set(
+            captured
+              .filter((call) => call.operation === 'models' && !call.failed)
+              .map((call) => call.source)
+          ),
+        ].sort(),
+        ['anthropic', 'google', 'opencode', 'openrouter']
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+);
+
+const v2Disclaimer =
+  'capabilities_pending: V2 catalog reads do not qualify authentication, team launch or one-shot execution.';
+const nativePath = 'C:\\TEST-packaged\\user-data\\runtimes\\opencode\\bin\\opencode.exe';
+const knownModels = ['opencode/known-one', 'opencode/known-two'];
+
+function v2ReadEvidence() {
+  const status = {
+    providerId: 'opencode', supported: true, statusCheckOutcome: 'model_only',
+    verificationState: 'unknown', authenticated: false,
+    capabilities: { teamLaunch: false, oneShot: false },
+    statusMessage: 'OpenCode V2 catalog available; capabilities_pending',
+    models: [...knownModels],
+    externalRuntimeDiagnostics: [{ id: 'cli-bin', detected: true, detailMessage: nativePath }],
+    modelCatalog: {
+      schemaVersion: 1, providerId: 'opencode', source: 'app-server', status: 'stale',
+      models: knownModels.map((id) => ({ id })),
+      diagnostics: { configReadState: 'ready', appServerState: 'healthy',
+        code: 'capabilities_pending', message: 'capabilities_pending' },
+    },
+  };
+  return [
+    { installed: true, state: 'ready', source: 'app-managed', version: '2.1.4', binaryPath: nativePath },
+    { source: 'app-managed', version: '2.1.4', path: nativePath, sha256: 'a'.repeat(64) },
+    { schemaVersion: 1, version: '2.1.4', binaryPath: nativePath,
+      platformPackage: '@opencode/cli-windows-x64', integrity: 'sha512-VEVTVA==' },
+    [structuredClone(status), structuredClone(status)],
+  ];
+}
+
+function v2Directory(summary = true) {
+  return {
+    schemaVersion: 1, runtimeId: 'opencode',
+    directory: {
+      runtimeId: 'opencode', diagnostics: [summary ? 'capabilities_pending' : v2Disclaimer],
+      entries: [{ providerId: 'opencode', state: 'available',
+        modelCount: summary ? null : 2, sources: ['seed', 'inventory'],
+        metadata: { hasKnownModels: !summary } }],
+      cursor: null, nextCursor: null, totalCount: 1, returnedCount: 1,
+    },
+  };
+}
+
+function catalogRecord(method, response, input = {}) {
+  return {
+    method, response, startedAt: 1, completedAt: 2,
+    input: { runtimeId: 'opencode', projectPath: null, refresh: true, cursor: null,
+      ...(method === 'loadProviderDirectory' ? { summary: true, filter: 'all' }
+        : { providerId: 'opencode', requestGroupId: 'dashboard-connected-catalog:1:opencode' }),
+      ...input },
+  };
+}
+
+test('V2 catalog disclaimers require managed identity and both successful native read-only statuses', () => {
+  const evidence = v2ReadEvidence();
+  const expectation = qualifyCatalogReadExpectation(...evidence);
+  assert.equal(expectation.kind, 'v2-catalog-only');
+  assert.equal(expectation.nativeVersion, '2.1.4');
+  assert.deepEqual(expectation.modelIds, knownModels);
+  assert.equal(expectation.authenticationProven, false);
+  assert.equal(expectation.launchReadinessProven, false);
+  // A stale project-status projection is not a fresh-model qualification.
+  assert.equal(evidence[3][0].modelCatalog.status, 'stale');
+  for (const invalidate of [
+    (e) => { e[0].source = 'path'; },
+    (e) => { e[1].sha256 = 'not-a-digest'; },
+    (e) => { e[2].binaryPath = 'C:\\foreign\\opencode.exe'; },
+    (e) => { e[2].version = '2.1.3'; },
+    (e) => { e[3].pop(); },
+    (e) => { e[3][0].modelCatalog.diagnostics.appServerState = 'degraded'; },
+    (e) => { e[3][1].modelCatalog.diagnostics.configReadState = 'failed'; },
+    (e) => { e[3][1].statusCheckOutcome = 'transient_error'; },
+    (e) => { e[3][1].capabilities.teamLaunch = true; },
+    (e) => { e[3][1].externalRuntimeDiagnostics[0].detailMessage = 'C:\\foreign\\opencode.exe'; },
+    (e) => { e[3][1].models = []; e[3][1].modelCatalog.models = []; },
+    (e) => { e[3][1].modelCatalog.models.pop(); },
+  ]) {
+    const invalid = structuredClone(evidence);
+    invalidate(invalid);
+    assert.throws(() => qualifyCatalogReadExpectation(...invalid));
+  }
+  for (const version of ['1.19.4', '2.1.4-beta.1', '3.0.0']) {
+    const unqualified = structuredClone(evidence);
+    unqualified[0].version = version;
+    assert.equal(qualifyCatalogReadExpectation(...unqualified), undefined);
+  }
+});
+
+test('verified V2 summary settles immediately but V1, missing proof and additional diagnostics stay strict', async () => {
+  const expectation = qualifyCatalogReadExpectation(...v2ReadEvidence());
+  const summary = v2Directory();
+  let calls = 0;
+  assert.equal(await waitForSettledDirectory(async () => { calls++; return summary; }, 1000,
+    expectation), summary);
+  assert.equal(calls, 1);
+  assert.throws(() => assertSettledDirectoryPage(summary.directory), /Pending\/degraded/);
+  for (const diagnostics of [[], ['capabilities_pending', 'capabilities_pending'],
+    ['capabilities_pending', 'OpenCode inventory probe timed out after 60000ms'], [v2Disclaimer]]) {
+    const response = structuredClone(summary);
+    response.directory.diagnostics = diagnostics;
+    await assert.rejects(waitForSettledDirectory(async () => response, 1000, expectation),
+      /readiness failed/);
+  }
+  await assert.rejects(waitForSettledDirectory(async () => ({ ...summary, error: { message: 'failed' } }),
+    1000, expectation), /readiness failed/);
+});
+
+test('V2 measured UI still requires its own fresh complete model pages and exact rendered inventory', async () => {
+  const expectation = qualifyCatalogReadExpectation(...v2ReadEvidence());
+  const modelPage = (modelId, cursor, nextCursor) => ({
+    schemaVersion: 1, runtimeId: 'opencode', models: {
+      runtimeId: 'opencode', providerId: 'opencode', catalogState: 'fresh',
+      cursor, nextCursor, totalCount: 2, returnedCount: 1,
+      models: [{ providerId: 'opencode', modelId }],
+    },
+  });
+  const records = [
+    catalogRecord('loadProviderDirectory', v2Directory()),
+    catalogRecord('loadModels', modelPage(knownModels[0], null, 'next')),
+    catalogRecord('loadModels', modelPage(knownModels[1], 'next', null), { cursor: 'next' }),
+  ];
+  const completed = { state: 'ready', models: [...knownModels] };
+  assert.deepEqual((await qualifyUIRefresh(records, completed, expectation)).modelIds, knownModels);
+  await assert.rejects(qualifyUIRefresh(records, completed), /Pending\/degraded/);
+  for (const invalidate of [
+    (r) => { r[1].response.models.catalogState = 'stale'; },
+    (r) => { delete r[1].response.models.catalogState; },
+    (r) => { r.pop(); },
+    (r) => { r[2].input.cursor = 'foreign'; },
+    (r) => { r[1].input.providerId = 'foreign'; },
+    (r) => { r[1].error = 'transport failed'; },
+    (r) => { r[0].response.directory.diagnostics.push('native failure'); },
+  ]) {
+    const invalid = structuredClone(records);
+    invalidate(invalid);
+    await assert.rejects(qualifyUIRefresh(invalid, completed, expectation));
+  }
+  await assert.rejects(qualifyUIRefresh(records, { ...completed, models: [knownModels[0]] },
+    expectation), /Rendered UI/);
+  await assert.rejects(qualifyUIRefresh(records, { ...completed, state: 'error' }, expectation));
+});
+
+test('V2 full directory disclaimer never qualifies seed-only or failed inventory', () => {
+  const expectation = qualifyCatalogReadExpectation(...v2ReadEvidence());
+  const full = v2Directory(false);
+  const observation = { overflow: false, records: [catalogRecord('loadProviderDirectory', full,
+    { summary: false })] };
+  assert.doesNotThrow(() => assertSettledDirectoryPage(full.directory, expectation, false));
+  assert.throws(() => assertSettledDirectoryPage(full.directory), /Pending\/degraded/);
+  assert.equal(settingsRefreshSettled(observation, 1000, 500, expectation), true);
+  assert.equal(settingsRefreshFailure(observation, expectation), null);
+  for (const invalidate of [
+    (d) => { d.entries = []; d.returnedCount = 0; d.totalCount = 0; },
+    (d) => { d.entries[0].modelCount = null; d.entries[0].metadata.hasKnownModels = false; },
+    (d) => { d.entries[0].sources = ['seed']; },
+    (d) => { d.entries[0].sources = 'not-inventory'; },
+    (d) => { d.entries[0].providerId = 'foreign'; },
+    (d) => { d.diagnostics.push('V2 read status unavailable'); },
+    (d) => { d.diagnostics = ['capabilities_pending']; },
+  ]) {
+    const invalid = structuredClone(observation);
+    invalidate(invalid.records[0].response.directory);
+    assert.throws(() => assertSettledDirectoryPage(invalid.records[0].response.directory,
+      expectation, false), /Pending\/degraded/);
+    assert.equal(settingsRefreshSettled(invalid, 1000, 500, expectation), false);
+    assert.equal(settingsRefreshFailure(invalid, expectation)?.category, 'native-diagnostics');
+  }
+  const failed = structuredClone(observation);
+  failed.records[0].response.error = { message: 'native error' };
+  assert.equal(settingsRefreshSettled(failed, 1000, 500, expectation), false);
+  assert.equal(settingsRefreshFailure(failed, expectation)?.category, 'runtime-error');
+});
+
+test('V2 full settings accepts native provider provenance but rejects seed/config-only or failed reads', () => {
+  const expectation = qualifyCatalogReadExpectation(...v2ReadEvidence());
+  assert.equal(expectation.authenticationProven, false);
+  assert.equal(expectation.launchReadinessProven, false);
+  const response = v2Directory(false);
+  Object.assign(response.directory.entries[0], { sources: ['opencode-provider'],
+    sourceLabel: 'OpenCode catalog', state: 'available' });
+  const observation = { overflow: false, records: [catalogRecord('loadProviderDirectory', response,
+    { summary: false })] };
+  assert.doesNotThrow(() => assertSettledDirectoryPage(response.directory, expectation, false));
+  assert.equal(settingsRefreshSettled(observation, 1000, 500, expectation), true);
+  assert.equal(settingsRefreshFailure(observation, expectation), null);
+  // The same disclaimer and native-looking source cannot qualify a missing/failed inventory.
+  for (const invalidate of [
+    (d) => { d.entries[0].sources = ['seed']; },
+    (d) => { d.entries[0].sources = ['config-provider']; },
+    (d) => { d.entries[0].sources = []; },
+    (d) => { d.entries[0].sources = 'opencode-provider'; },
+    (d) => { d.entries[0].modelCount = null; },
+    (d) => { d.entries[0].modelCount = 0; },
+    (d) => { d.entries[0].modelCount = 2.5; },
+    (d) => { d.entries[0].metadata.hasKnownModels = false; },
+    (d) => { d.entries[0].providerId = 'foreign'; },
+    (d) => { d.diagnostics.push('V2 read status unavailable'); },
+    (d) => { d.diagnostics.push('inventory probe timed out'); },
+    (d) => { d.diagnostics = ['capabilities_pending']; },
+  ]) {
+    const invalid = structuredClone(observation);
+    invalidate(invalid.records[0].response.directory);
+    assert.throws(() => assertSettledDirectoryPage(invalid.records[0].response.directory,
+      expectation, false), /Pending\/degraded/);
+    assert.equal(settingsRefreshSettled(invalid, 1000, 500, expectation), false);
+    assert.equal(settingsRefreshFailure(invalid, expectation)?.category, 'native-diagnostics');
+  }
+  const failed = structuredClone(observation);
+  failed.records[0].response.error = { message: 'actual native failure' };
+  assert.equal(settingsRefreshSettled(failed, 1000, 500, expectation), false);
+  assert.equal(settingsRefreshFailure(failed, expectation)?.category, 'runtime-error');
+  // An unverified/V1 caller cannot use this V2-only disclaimer allowance.
+  assert.equal(settingsRefreshSettled(observation, 1000), false);
+  assert.equal(settingsRefreshFailure(observation)?.category, 'native-diagnostics');
+});
+
+test('V2 settings requires the same native identity and an actually observed fallback model', () => {
+  const expectation = qualifyCatalogReadExpectation(...v2ReadEvidence());
+  const response = {
+    schemaVersion: 1, runtimeId: 'opencode', view: {
+      runtimeId: 'opencode', runtime: { state: 'needs-auth', version: '2.1.4', cliPath: nativePath },
+      providers: [{ providerId: 'opencode' }],
+      configuredModels: [],
+      fallbackModel: knownModels[0],
+      diagnostics: [v2Disclaimer],
+    },
+  };
+  assert.deepEqual(qualifySettings(response, expectation), { state: 'needs-auth', providers: 1, models: 0 });
+  assert.throws(() => qualifySettings(response), /Settings diagnostics/);
+  for (const invalidate of [
+    (r) => { r.view.runtime.state = 'degraded'; },
+    (r) => { r.view.runtime.version = '2.1.3'; },
+    (r) => { r.view.runtime.cliPath = 'C:\\foreign\\opencode.exe'; },
+    (r) => { delete r.view.fallbackModel; },
+    (r) => { r.view.fallbackModel = null; },
+    (r) => { r.view.fallbackModel = 'opencode/unobserved'; },
+    (r) => {
+      delete r.view.fallbackModel;
+      r.view.configuredModels = [{ providerId: 'opencode', modelId: knownModels[0] }];
+    },
+    (r) => { r.view.providers = null; },
+    (r) => { r.view.configuredModels = null; },
+    (r) => { r.view.diagnostics.push('V2 read status unavailable'); },
+    (r) => { r.error = { message: 'native failure' }; },
+  ]) {
+    const invalid = structuredClone(response);
+    invalidate(invalid);
+    assert.throws(() => qualifySettings(invalid, expectation));
+  }
+});
+
+test('Settings refresh waits for a remounted control before exactly one mouse sequence', async () => {
+  const points = [null, null, { x: 31, y: 42 }];
+  const sent = []; let clock = 0;
+  await clickControl(async () => points.shift(), async (_method, event) => sent.push(event), 'control', async readPoint => {
+    const result = await waitForPackagedRefreshPreparation(async () => {
+      const point = await readPoint();
+      return { point, requestsSettled: true, catalog: { state: 'ready' }, control: { present: Boolean(point), connected: Boolean(point), rendered: Boolean(point), disabled: !point } };
+    }, { phase: 'settings', now: () => clock, pause: async ms => { clock += ms; } });
+    assert(result.ready); return result.point;
+  });
+  assert.equal(clock, 500);
+  assert.deepEqual(sent.map(event => event.type), ['mousePressed', 'mouseReleased']);
+  assert(sent.every(event => event.x === 31 && event.y === 42));
+});
+
+
+test('E2E provider navigation performs a real click only once', async () => {
+  let entered = false;
+  const sent = [];
+  const evaluate = async (expression) => {
+    if (expression.startsWith('(() => { const b')) return { x: 20, y: 30 };
+    if (expression.includes('provider-settings-page')) return entered;
+    if (expression.includes('dashboard-manage-providers')) return true;
+    if (expression.includes('runtime-manage-opencode')) return false;
+    throw new Error(`Unexpected navigation probe: ${expression}`);
+  };
+  const send = async (method, event) => {
+    sent.push([method, event.type]);
+    if (event.type === 'mouseReleased') entered = true;
+  };
+  await enterProviderSettings(evaluate, send);
+  await enterProviderSettings(evaluate, send);
+  assert.deepEqual(sent, [
+    ['Input.dispatchMouseEvent', 'mousePressed'],
+    ['Input.dispatchMouseEvent', 'mouseReleased'],
+  ]);
 });

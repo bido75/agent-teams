@@ -1511,7 +1511,22 @@
       "searchTeams": "Maghanap ng mga team...",
       "selectTeam": "Pumili ng team...",
       "team": "Team",
-      "title": "Schedule"
+      "title": "Schedule",
+      "execution": "Pagpapatakbo",
+      "legacyNotice": "Umiiral na isang-beses na iskedyul: hindi mababago ng pag-save ang dating kilos nito.",
+      "upgradeSmart": "Lumipat sa matalinong iskedyul",
+      "oneAgent": "Isang agent",
+      "wholeTeam": "Buong team",
+      "target": "Tatanggap kapag tumatakbo ang team",
+      "leadDefault": "Team lead (default)",
+      "agentDescription": "Kapag hindi tumatakbo ang team, maglulunsad ng hiwalay na agent; kung aktibo, magtatalaga ng gawain.",
+      "teamDescription": "Kapag hindi tumatakbo ang team, sisimulan ito; kung aktibo, magtatalaga ng gawain sa lead. Gagamitin ang naka-save na setting.",
+      "teamPathMissing": "I-save muna ang project folder ng team bago mag-iskedyul ng paglulunsad.",
+      "taskFirstAgentDescription": "Makakatanggap ang napiling teammate ng gawain sa board matapos ligtas na simulan ang team kung kailangan. Hindi maaantala ang mga abalang agent.",
+      "taskFirstTeamDescription": "Makakatanggap ang team lead ng gawain sa koordinasyon matapos ligtas na simulan ang team kung kailangan. Hindi maaantala ang kasalukuyang trabaho.",
+      "taskFirstTarget": "Italaga kay",
+      "historicalPromptReviewRequired": "Review the team's saved one-time instructions before scheduling. Clear or separate the old launch prompt first.",
+      "historicalPromptAcknowledged": "Nasuri ko ang lumang prompt at naihiwalay ang pangmatagalang tagubilin. Panatilihin ang lumang teksto pero huwag patakbuhin sa iskedyul."
     },
     "title": {
       "createSchedule": "Lumikha ng Schedule",
@@ -2086,7 +2101,8 @@
       "stillRunning": "Tumatakbo pa ang task...",
       "loadingLogs": "Niloload ang mga log...",
       "errors": "Mga Error",
-      "close": "Isara"
+      "close": "Isara",
+      "openTask": "Buksan ang gawain"
     },
     "cron": {
       "expression": "Cron expression",
@@ -2134,7 +2150,9 @@
       "completed": "Tapos na",
       "failed": "Nabigo",
       "interrupted": "Naantala",
-      "cancelled": "Kinansela"
+      "cancelled": "Kinansela",
+      "dispatched": "Naipadala",
+      "skipped": "Nilaktawan"
     }
   },
   "openCodeContextConfigHint": {
@@ -2423,7 +2441,10 @@
       "hiddenCount": "{{count}} nakatago",
       "trash": "Trash",
       "gridView": "Grid view",
-      "columnsView": "Columns view"
+      "columnsView": "Columns view",
+      "tableView": "View ng talahanayan",
+      "configureColumns": "Piliin ang mga column",
+      "resizeColumn": "Baguhin ang lapad ng {{column}}"
     },
     "trash": {
       "title": "Trash",

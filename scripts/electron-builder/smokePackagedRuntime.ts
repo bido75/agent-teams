@@ -11,6 +11,8 @@ import {
   DefaultProcessLedger,
   stopUnregisteredApp,
 } from '../e2e/anthropic-compatible-status/packaged-default-processes.ts';
+import { verifyExternalOpenCodeV2Base } from '../lib/opencode-v2-base-inventory.mts';
+import { smokeExternalOpenCodeV2Base } from './smokeExternalOpenCodeV2Base.ts';
 
 const require = createRequire(import.meta.url);
 const nativePolicy = require('./afterPack.cjs')._internal as {
@@ -221,7 +223,10 @@ export function deliveryIdentity(
   assert.equal(identity.schema, 1);
   assert.equal(identity.platform, platform);
   assert.equal(identity.arch, arch);
-  assert.equal(identity.bunVersion, platform === 'win32' ? '1.4.3' : '1.3.11');
+  assert.equal(
+    identity.bunVersion,
+    platform === 'win32' ? '1.4.3' : platform === 'darwin' ? '1.4.4' : '1.3.11'
+  );
   assert.match(bunSha256, /^[a-f0-9]{64}$/);
   assert.match(entrySha256, /^[a-f0-9]{64}$/);
   assert.equal(identity.bunSha256, bunSha256, 'Declared Bun identity differs from physical bytes');
@@ -358,7 +363,10 @@ async function probe(runtime: string, staged: string, project: string, expectedB
     }
   ).Bun;
   assert(bun, 'Runtime probe must execute using bundled Bun');
-  assert.equal(bun.version, process.platform === 'win32' ? '1.4.3' : '1.3.11');
+  assert.equal(
+    bun.version,
+    process.platform === 'win32' ? '1.4.3' : process.platform === 'darwin' ? '1.4.4' : '1.3.11'
+  );
   const executable = containedFile(runtime, process.execPath);
   assert.equal(
     executable.sha256,
@@ -662,6 +670,7 @@ export function smokeRuntimeWithoutOpenCodeV2(input: {
 
 export async function smokePackagedRuntime(bundle: string, platform: string) {
   assert.equal(platform, process.platform, 'Packaged runtime smoke must use the actual target OS');
+  const platformKey = `${process.platform}-${process.arch}`;
   const runtime = containedDirectory(
     bundle,
     path.join(
@@ -677,7 +686,7 @@ export async function smokePackagedRuntime(bundle: string, platform: string) {
     assets: Record<string, { sha256: string; binaryName: string }>;
     opencodeV2?: { qualified?: Record<string, unknown> };
   };
-  const asset = lock.assets[`${process.platform}-${process.arch}`];
+  const asset = lock.assets[platformKey];
   assert(asset && /^[a-f0-9]{64}$/.test(asset.sha256), 'Missing immutable runtime archive pin');
   assert.equal(
     fs.readFileSync(stagedFile(runtime, staged, 'VERSION').path, 'utf8').trim(),
@@ -688,6 +697,10 @@ export async function smokePackagedRuntime(bundle: string, platform: string) {
     .trim();
   assert.match(sourceCommit, /^[a-f0-9]{40}$/);
   const frontdoor = stagedFile(runtime, staged, asset.binaryName);
+  const externalSupport = verifyExternalOpenCodeV2Base(runtime, lock, platformKey);
+  if (externalSupport) {
+    verifyExternalOpenCodeV2Base(staged, lock, platformKey);
+  }
   if (!fs.existsSync(path.join(runtime, 'opencode-delivery.json'))) {
     const evidence = smokeRuntimeWithoutOpenCodeV2({
       runtime,
@@ -700,11 +713,8 @@ export async function smokePackagedRuntime(bundle: string, platform: string) {
     );
     return;
   }
-  const executable = stagedFile(
-    runtime,
-    staged,
-    process.platform === 'win32' ? 'bun/bun.exe' : 'bun/bun'
-  );
+  const bunEntry = process.platform === 'win32' ? 'bun/bun.exe' : 'bun/bun';
+  const executable = stagedFile(runtime, staged, bunEntry);
   const entry = stagedFile(runtime, staged, 'local-cli/cli.js');
   const deliveryFile = stagedFile(runtime, staged, 'opencode-delivery.json');
   const delivery = deliveryIdentity(
@@ -715,6 +725,13 @@ export async function smokePackagedRuntime(bundle: string, platform: string) {
     entry.sha256
   );
   await compatible(executable.path);
+  if (externalSupport) {
+    smokeExternalOpenCodeV2Base(frontdoor.path, runtimeEnvironment);
+    console.log(
+      `[smokePackagedRuntime] OK ${platform}: ${JSON.stringify({ runtimeVersion: lock.version, sourceCommit, frontdoor, delivery, openCodeV2: 'external support; base availability only, optional engine execution requires its separate smoke' })}`
+    );
+    return;
+  }
   const project = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'packaged-runtime-TEST-')));
   let evidence: unknown;
   try {

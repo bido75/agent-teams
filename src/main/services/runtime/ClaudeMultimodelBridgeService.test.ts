@@ -21,23 +21,6 @@ interface RuntimeStatusMapper {
   mergeOpenCodeVerification: (provider: CliProviderStatus, snapshot: unknown) => CliProviderStatus;
 }
 
-interface RuntimeStatusHydrationInternals {
-  beginProviderStatusHydration: (
-    binaryPath: string,
-    providerIds: readonly CliProviderId[],
-    projectPath?: string | null
-  ) => number;
-  getProviderStatusHydrationKey: (
-    binaryPath: string,
-    providerId: CliProviderId,
-    projectPath?: string | null
-  ) => string;
-  providerStatusHydrationInFlight: Map<
-    string,
-    { readonly generation: number; readonly promise: Promise<CliProviderStatus> }
-  >;
-}
-
 function mapRuntimeProviderStatus(
   providerId: CliProviderId,
   runtimeStatus: unknown
@@ -68,6 +51,50 @@ function verifiedOpenCodeProvider(): CliProviderStatus {
 }
 
 describe('ClaudeMultimodelBridgeService runtime status mapping', () => {
+  test.each([false, true])(
+    'does not restore a pre-invalidation project catalog (newer read completed=%s)',
+    async (readNewerFirst) => {
+      const service = new ClaudeMultimodelBridgeService();
+      service.invalidateProviderStatusHydrations();
+      const internals = service as unknown as {
+        getProviderStatusFromScopedRuntimeStatus: (
+          binaryPath: string,
+          providerId: CliProviderId,
+          options: { projectPath: string }
+        ) => Promise<CliProviderStatus>;
+        getProviderStatusFromRuntimeStatusCommand: () => Promise<CliProviderStatus>;
+      };
+      let finishOld!: (value: CliProviderStatus) => void;
+      const old = new Promise<CliProviderStatus>((resolve) => {
+        finishOld = resolve;
+      });
+      const before = { ...verifiedOpenCodeProvider(), models: ['TEST/before-install'] };
+      const after = { ...verifiedOpenCodeProvider(), models: ['TEST/after-install'] };
+      const command = vi
+        .spyOn(internals, 'getProviderStatusFromRuntimeStatusCommand')
+        .mockReturnValueOnce(old)
+        .mockResolvedValue(after);
+      const read = () =>
+        internals.getProviderStatusFromScopedRuntimeStatus('/TEST/runtime', 'opencode', {
+          projectPath: path.resolve('TEST-project'),
+        });
+      try {
+        const originalRead = read();
+        await vi.waitFor(() => expect(command).toHaveBeenCalledTimes(1));
+        service.invalidateProviderStatusHydrations();
+        if (readNewerFirst) expect(await read()).toEqual(after);
+        finishOld(before);
+        await originalRead;
+        expect(await read()).toEqual(after);
+        expect(command).toHaveBeenCalledTimes(2);
+      } finally {
+        finishOld(before);
+        service.invalidateProviderStatusHydrations();
+        command.mockRestore();
+      }
+    }
+  );
+
   test.each([' configured-model ', null, undefined, 42, {}, []])(
     'maps only the current typed effective model %j',
     (effectiveDefaultModel) => {
@@ -402,21 +429,50 @@ describe('ClaudeMultimodelBridgeService runtime status mapping', () => {
     });
   });
 
-  test('reuses an active single-provider catalog hydration generation', () => {
-    const internals =
-      new ClaudeMultimodelBridgeService() as unknown as RuntimeStatusHydrationInternals;
-    const binaryPath = '/fake/cli';
-    const generation = internals.beginProviderStatusHydration(binaryPath, ['codex']);
-    const hydrationKey = internals.getProviderStatusHydrationKey(binaryPath, 'codex', null);
-    internals.providerStatusHydrationInFlight.set(hydrationKey, {
-      generation,
-      promise: Promise.resolve(mapRuntimeProviderStatus('codex', {})),
+  test('does not attach a newer summary to a cold catalog probe or replay its result', async () => {
+    const service = new ClaudeMultimodelBridgeService();
+    const internals = service as unknown as {
+      getProviderStatusFromScopedRuntimeStatus: (
+        binaryPath: string,
+        providerId: CliProviderId,
+        options: { summary?: boolean }
+      ) => Promise<CliProviderStatus>;
+    };
+    const fresh: CliProviderStatus = {
+      ...verifiedOpenCodeProvider(),
+      providerId: 'codex',
+      runtimeCapabilities: { modelCatalog: { dynamic: true, source: 'app-server' } },
+    };
+    const cold: CliProviderStatus = {
+      ...fresh,
+      authenticated: false,
+      verificationState: 'unknown',
+    };
+    let finishCold!: (provider: CliProviderStatus) => void;
+    const pendingCold = new Promise<CliProviderStatus>((resolve) => {
+      finishCold = resolve;
     });
-
-    expect(internals.beginProviderStatusHydration(binaryPath, ['codex'])).toBe(generation);
-    expect(
-      internals.beginProviderStatusHydration(binaryPath, ['codex'], '/tmp/another-project')
-    ).not.toBe(generation);
+    let summaries = 0;
+    let fullReads = 0;
+    vi.spyOn(internals, 'getProviderStatusFromScopedRuntimeStatus').mockImplementation(
+      (_binary, _provider, options) => {
+        if (options.summary) return Promise.resolve(summaries++ === 0 ? cold : fresh);
+        return fullReads++ === 0 ? pendingCold : Promise.resolve(fresh);
+      }
+    );
+    const oldUpdates = vi.fn();
+    const freshUpdates = vi.fn();
+    expect(await service.getProviderStatus('/fake/cli', 'codex', oldUpdates)).toMatchObject({
+      authenticated: false,
+    });
+    expect(await service.getProviderStatus('/fake/cli', 'codex', freshUpdates)).toMatchObject({
+      authenticated: true,
+    });
+    finishCold({ ...cold, modelCatalogRefreshState: 'error' });
+    await vi.waitFor(() => expect(freshUpdates).toHaveBeenCalledTimes(1));
+    expect(oldUpdates).not.toHaveBeenCalled();
+    expect(fullReads).toBe(2);
+    expect(freshUpdates).toHaveBeenLastCalledWith(expect.objectContaining({ authenticated: true }));
   });
 });
 

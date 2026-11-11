@@ -40,10 +40,15 @@ on:
 permissions:
   contents: read
 
+# Canonical run supersession; see docs/ci-qualification.md#run-supersession.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || (github.event_name == 'merge_group' || github.event_name == 'push' && github.ref_type == 'branch' && github.event.repository.default_branch != '' && github.ref_name != github.event.repository.default_branch && !startsWith(github.ref_name, 'release/')) && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' && github.ref_type == 'branch' && github.event.repository.default_branch != '' && github.ref_name != github.event.repository.default_branch && !startsWith(github.ref_name, 'release/') }}
+
 jobs:
   linux-package-tooling-quality:
     if: github.event_name == 'pull_request'
-    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubicloud-standard-4' }}
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
@@ -62,7 +67,7 @@ jobs:
 
   inputs:
     if: github.repository == '777genius/agent-teams-ai' && github.event_name == 'workflow_dispatch'
-    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubicloud-standard-4' }}
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 25
     # Draft reads require push permission. This job only reads release bytes;
     # its token never reaches a desktop process or a native runtime job.
@@ -167,7 +172,7 @@ jobs:
     # The host supplies a kernel only; each GUI/package manager uses the native
     # distro below. Ubuntu 22 avoids Ubuntu 24's host-global userns restriction.
     # No host sysctl, privileged container, extra capability or AppArmor bypass.
-    runs-on: ${{ vars.CI_LINUX_2204_RUNNER || 'ubicloud-standard-4-ubuntu-2204' }}
+    runs-on: ${{ vars.CI_LINUX_2204_RUNNER || 'ubuntu-22.04' }}
     timeout-minutes: 40
     strategy:
       fail-fast: false

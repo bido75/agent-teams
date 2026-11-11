@@ -17,12 +17,16 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
+import { stripAgentBlocks, unwrapAgentBlock } from '../../src/shared/constants/agentBlocks';
 import { parseSingleBridgeJsonResult, validateBridgeResultEnvelope } from '../../src/main/services/team/opencode/bridge/OpenCodeBridgeCommandContract';
+import { projectTaskPersistenceDifference } from './opencode-diagnostics/task-persistence';
+import { reprojectV2OwnedSessionDiagnostic, v2TerminalFailureReaderCode } from './opencode-diagnostics/v2-terminal-failure';
 import { projectV2NativeTranscript } from './opencode-native-v2-transcript';
 import { stageNativeTestNode } from './opencode-native-test-node';
+import { stageNativeCandidateSupport } from './opencode-native-windows-candidate';
 import { verifyWindowsCommandSyntax, type WindowsCommandSyntaxFact } from './opencode-native-windows-command';
 import {
   realTaskPrompt,
@@ -1002,9 +1006,38 @@ type StopObservation = {
   runId: string | null;
   livenessKinds: string[];
 };
+/** Closed, bounded observations only; raw peer text and nonce values never leave. */
+export function projectWindowsPeerTextRows(
+  rows: readonly { from: string; to?: string; text: string }[],
+  nonce: { alice: string; bob: string }
+) {
+  return (['alice', 'bob'] as const).map(from => {
+    const to = from === 'alice' ? 'bob' : 'alice';
+    const routeRows = rows.filter(row => row.from === from && row.to === to);
+    const challenge = `CHALLENGE:${nonce[from]}`, ack = `ACK:${nonce[to]}`;
+    return { from, to, rowCount: routeRows.length, rowsExhaustive: routeRows.length <= 32,
+      rows: routeRows.slice(0, 32).map(row => {
+        const text = row.text;
+        const inspected = text.slice(0, 32_768);
+        const full = inspected.length === text.length;
+        const visible = full ? stripAgentBlocks(text) : null;
+        const unwrapped = full ? unwrapAgentBlock(text) : null;
+        return { textLength: text.length, inspectedCharacters: inspected.length, textExhaustive: full,
+          containsChallengeMarker: inspected.includes('CHALLENGE:'), containsAckMarker: inspected.includes('ACK:'),
+          containsExpectedChallenge: inspected.includes(challenge), containsExpectedAck: inspected.includes(ack),
+          containsOwnNonce: inspected.includes(nonce[from]), containsPeerNonce: inspected.includes(nonce[to]),
+          exactChallenge: text === challenge, exactAck: text === ack,
+          trimmedExactChallenge: full && text.trim() === challenge, trimmedExactAck: full && text.trim() === ack,
+          visibleExactChallenge: visible === challenge, visibleExactAck: visible === ack,
+          unwrappedExactChallenge: unwrapped === challenge, unwrappedExactAck: unwrapped === ack };
+      }) };
+  });
+}
+
 type PeerObservation = {
   matched: boolean[];
   routes: { from: string; to: string }[];
+  textShapes: ReturnType<typeof projectWindowsPeerTextRows>;
   challengeDeliveries: {
     member: 'alice' | 'bob';
     state: 'message_absent' | 'status_unavailable' | 'ledger_absent' | 'observed';
@@ -1066,6 +1099,12 @@ async function completed(
     420_000
   );
 }
+type NativeCommandProof = {
+  kind: 'paired-native-shell-result'; actorMatches: boolean; sessionMatches: boolean;
+  modelMatches: boolean; nativeExact: boolean; allowedForm: boolean;
+  expectedNodeExact: boolean; programExact: boolean;
+  resultPaired: boolean; resultSucceeded: boolean; markerMatches: boolean;
+};
 async function commandEvidence(
   app: App,
   taskId: string,
@@ -1073,9 +1112,9 @@ async function commandEvidence(
   session: string,
   program: string,
   marker: string,
-  version: string,
+  executable: string,
   expectedModel: string
-) {
+): Promise<NativeCommandProof> {
   return waitFor(
     async () => {
       const stream = await app.call('getTaskLogStream', taskId);
@@ -1092,22 +1131,21 @@ async function commandEvidence(
             'Actual assistant inference used a different model'
           );
           if (!assistantModels.includes(expectedModel)) continue;
-          const native = chunk.toolExecutions.filter((execution) =>
-            nativeCommandMatch(execution, program, marker).nativeMatches);
-          const succeeded = (execution: (typeof chunk.toolExecutions)[number]) =>
-            nativeCommandMatch(execution, program, marker).succeeded;
-          if (native.some(succeeded)) return 'paired-native-shell-result';
-          // V2 canonical CodeMode metadata proves an actual native invocation but
-          // deliberately provides no child result. Keep the successful composite
-          // output separate; never manufacture a paired nested result/status.
-          if (
-            version.startsWith('2.') &&
-            native.length &&
-            chunk.toolExecutions.some(
-              (execution) => execution.toolCall.name === 'execute' && succeeded(execution)
-            )
-          )
-            return 'code-mode-outer-result-plus-native-invocation';
+          for (const execution of chunk.toolExecutions) {
+            const match = nativeCommandMatch(execution, program, marker, executable);
+            // An outer CodeMode result never substitutes for this native call's
+            // own paired result. Unpaired invocations remain failure observations.
+            if (!match.succeeded) continue;
+            return { kind: 'paired-native-shell-result' as const,
+              actorMatches: segment.actor.memberName === member,
+              sessionMatches: segment.actor.sessionId === session,
+              modelMatches: assistantModels.includes(expectedModel),
+              nativeExact: match.nativeExact, allowedForm: match.commandShape.allowedForm,
+              expectedNodeExact: match.commandShape.expectedNodeExact,
+              programExact: match.commandShape.programExact,
+              resultPaired: match.resultPaired, resultSucceeded: match.resultSucceeded,
+              markerMatches: match.markerMatches };
+          }
         }
       }
       return null;
@@ -1143,11 +1181,20 @@ async function bundledRuntime(executable: string, manifestFile: string) {
   assert(stat.isFile() && !stat.isSymbolicLink() && stat.size <= BUNDLED_MANIFEST_MAX_BYTES);
   preproofStage = 'manifest_read';
   const manifest = JSON.parse(await readFile(manifestFile, 'utf8')) as {
+    mode: string;
+    appSha: string;
     sdkSha: string;
+    platform: string;
+    runtimeArchiveSha256: string;
     files: Record<string, string>;
   };
   preproofStage = 'manifest_schema';
   assert(
+    manifest.mode === 'candidate_not_public_release' &&
+      /^[a-f0-9]{40}$/.test(manifest.appSha) &&
+      manifest.appSha === process.env.GITHUB_SHA &&
+      manifest.platform === `${process.platform}-${process.arch}` &&
+      /^[a-f0-9]{64}$/.test(manifest.runtimeArchiveSha256) &&
     /^[a-f0-9]{40}$/.test(manifest.sdkSha) &&
       manifest.files &&
       typeof manifest.files === 'object' &&
@@ -1203,7 +1250,9 @@ async function bundledRuntime(executable: string, manifestFile: string) {
   const digests = Object.fromEntries(entries.map(([relative], index) => [relative, observedDigests[index]]));
   preproofStage = 'runtime_commit';
   assert.equal((await readFile(path.join(base, 'COMMIT_SHA'), 'utf8')).trim(), manifest.sdkSha);
-  return { bundledSdkSha: manifest.sdkSha, runtimeDigests: digests };
+  return { bundledSdkSha: manifest.sdkSha, runtimeDigests: digests,
+    appSha: manifest.appSha, nativePlatform: manifest.platform,
+    candidateBaseArchiveSha256: manifest.runtimeArchiveSha256 };
 }
 async function exactFile(project: string, name: string, expected?: string) {
   const file = path.join(project, name);
@@ -2173,7 +2222,7 @@ async function main() {
           executable,
           process.env.OPENCODE_NATIVE_EXPECTED_RUNTIME_MANIFEST ?? ''
         )
-      : { bundledSdkSha: '', runtimeDigests: {} };
+      : { bundledSdkSha: '', runtimeDigests: {} as Record<string, string> };
   const taskOwners = new Map<string, 'alice' | 'bob'>();
   const commandExpectations = new Map<string, NativeCommandExpectation>();
   const commandResultFiles: { name: string; expected: string }[] = [];
@@ -2188,6 +2237,7 @@ async function main() {
     version,
     sdkSelection: sdk === 'bundled' ? 'bundled without override' : 'explicit SDK override',
     ...bundled,
+    candidateSupport: null as Awaited<ReturnType<typeof stageNativeCandidateSupport>> | null,
     nativeNodeDependency: null as null | { sha256: string; bytes: number },
     commandSyntax: [] as WindowsCommandSyntaxFact[],
     inboxObservations: [] as Awaited<ReturnType<typeof inboxFacts>>[],
@@ -2220,7 +2270,8 @@ async function main() {
       ReturnType<ReturnType<typeof electronTeamPort>['getSafeStopFailure']>
     > | null,
     peerObservation: null as PeerObservation | null,
-    commandEvidenceConfirmed: [] as { member: string; kind: string }[],
+    commandEvidencePolicy: 'exact-staged-node-script-paired-own-result-v1',
+    commandEvidenceConfirmed: [] as (NativeCommandProof & { member: string })[],
     commandEvidenceLiveness: commandEvidenceLivenessRows,
     runIds: [] as string[],
     taskIds: [] as string[],
@@ -2242,6 +2293,7 @@ async function main() {
     peersConfirmed: false,
     heldStopConfirmed: false,
     persistenceConfirmed: false,
+    persistenceDifference: null as ReturnType<typeof projectTaskPersistenceDifference> | null,
     heldAssignmentReleasedAfterPersistence: false,
     relaunchConfirmed: false,
     finalStopConfirmed: false,
@@ -2252,6 +2304,9 @@ async function main() {
     nativeV2TranscriptFailure: null as null | {
       observation: 'captured' | 'unavailable'; member: 'alice' | 'bob';
       packet?: ReturnType<typeof projectV2NativeTranscript>;
+      terminalEvent?: ReturnType<typeof reprojectV2OwnedSessionDiagnostic>['terminalEvent'];
+      candidateProjection?: ReturnType<typeof reprojectV2OwnedSessionDiagnostic>['candidateProjection'];
+      requestedInput?: ReturnType<typeof reprojectV2OwnedSessionDiagnostic>['requestedInput'];
       failure?: { classification: string; kind?: string; sdkCode?: string | null; nativeOperation?: string | null; nativeErrno?: number | null; nativeStage?: string | null };
       inputFileRemoved?: boolean;
     },
@@ -2272,6 +2327,16 @@ async function main() {
   };
   preproofStage = 'proof_write';
   await checkpoint('startup');
+  if (sdk === 'bundled' && version.startsWith('2.')) {
+    preproofStage = 'candidate_support';
+    const archive = process.env.OPENCODE_NATIVE_CANDIDATE_SUPPORT_ARCHIVE;
+    const sdkRoot = process.env.OPENCODE_NATIVE_DIAGNOSTIC_SDK_ROOT;
+    assert(archive && sdkRoot && path.isAbsolute(archive) && path.isAbsolute(sdkRoot), 'Explicit candidate support selection required');
+    proof.candidateSupport = await stageNativeCandidateSupport({ executable, sdkRoot, archive,
+      userData: desktop.env.AGENT_TEAMS_ELECTRON_USER_DATA_DIR!, testRoot: desktop.root,
+      expectedSdkSha: bundled.bundledSdkSha, env: desktop.env });
+    await checkpoint('startup');
+  }
   preproofStage = 'scenario';
   let app = await desktop.launch(executable).catch(async (error: unknown) => {
     proof.status = 'failed';
@@ -2304,7 +2369,7 @@ async function main() {
       { name: 'bob-result.txt', expected: nonce.bob + '\n' },
       { name: 'new-result.txt', expected: nonce.new + '\n' }
     );
-    const base = `Work only inside ${desktop.projectPath}. Never delegate, install packages, detach processes or change host verification scripts. Use team tools for peer messages and task comments. When a peer sends CHALLENGE:<token>, reply to that sender ACK:<token> exactly. Never reply to ACK.`;
+    const base = `Work only inside ${desktop.projectPath}. Never delegate, install packages, detach processes or change host verification scripts. Use team tools for peer messages and task comments. When a peer sends CHALLENGE:<token>, use agent-teams_message_send to reply to that sender with its text property exactly ACK:<token>, substituting the received token. The text property must contain only ACK: followed by that same token: no prose, quotes, backticks, whitespace, task references or agent blocks. Never send the literal placeholder <token>. Never reply to ACK. The requirement that task_complete be your last action applies only to that task turn; later peer challenges are new turns and must receive the exact ACK even after task completion.`;
     const command = (name: string) => {
       const program = path.join(desktop.projectPath, name);
       return windowsVerificationCommand(testNode.executable, program);
@@ -2394,13 +2459,13 @@ async function main() {
           'Own only sum.cjs and alice-result.txt. Export sum(array) as module.exports; accept only an array of finite numbers, throw TypeError otherwise.',
           'Read alice-verify.cjs and create sum.cjs.',
           verificationInstruction(command('alice-verify.cjs')),
-          ...(short ? [] : [`Send bob CHALLENGE:${nonce.alice} with agent-teams_message_send.`]),
+          ...(short ? [] : [`Call agent-teams_message_send with these JSON arguments: ${JSON.stringify({ teamName: desktop.teamName, from: 'alice', to: 'bob', text: `CHALLENGE:${nonce.alice}` })}. The text property must contain only the challenge string, byte-for-byte, with no prose, quotes, backticks, whitespace, task references or agent blocks.`]),
         ],
       }),
     });
     proof.taskIds.push(alice.id);
     taskOwners.set(alice.id, 'alice');
-    commandExpectations.set(alice.id, { session: sessions[0], program: path.join(desktop.projectPath, 'alice-verify.cjs'), marker: 'COMMAND_EXEC:' + nonce.alice, model, comment: `TASK_COMMENT:${nonce.alice}` });
+    commandExpectations.set(alice.id, { session: sessions[0], executable: testNode.executable, program: path.join(desktop.projectPath, 'alice-verify.cjs'), marker: 'COMMAND_EXEC:' + nonce.alice, model, comment: `TASK_COMMENT:${nonce.alice}` });
     await completed(app, alice.id, 'alice', `TASK_COMMENT:${nonce.alice}`, recordCompletion);
     const aliceCommandEvidence = await commandEvidence(
       app,
@@ -2409,10 +2474,10 @@ async function main() {
       sessions[0],
       path.join(desktop.projectPath, 'alice-verify.cjs'),
       'COMMAND_EXEC:' + nonce.alice,
-      version,
+      testNode.executable,
       model
     );
-    proof.commandEvidenceConfirmed.push({ member: 'alice', kind: aliceCommandEvidence });
+    proof.commandEvidenceConfirmed.push({ member: 'alice', ...aliceCommandEvidence });
     if (short) {
       proof.fileHashes['alice-result.txt'] = await exactFile(
         desktop.projectPath,
@@ -2456,16 +2521,16 @@ async function main() {
         owner: 'bob',
         commentToken: `TASK_COMMENT:${nonce.bob}`,
         work: [
+          `First send your own distinct outbound challenge to Alice. Any earlier ACK you sent for Alice's challenge does not satisfy this step. Call agent-teams_message_send with these JSON arguments: ${JSON.stringify({ teamName: desktop.teamName, from: 'bob', to: 'alice', text: `CHALLENGE:${nonce.bob}` })}. The text property must contain only the challenge string, byte-for-byte, with no prose, quotes, backticks, whitespace, task references or agent blocks.`,
           'Own only sum.test.cjs and bob-result.txt. Read sum.cjs, do not modify it.',
           "Write sum.test.cjs using node:assert/strict, covering []=>0,[2,-5,7]=>4,[1.5,2.5]=>4,[-2,-3]=>-5 and TypeError for null,[NaN],[Infinity],['1'].",
           verificationInstruction(command('bob-verify.cjs')),
-          `Send alice CHALLENGE:${nonce.bob} with agent-teams_message_send.`,
         ],
       }),
     });
     proof.taskIds.push(bob.id);
     taskOwners.set(bob.id, 'bob');
-    commandExpectations.set(bob.id, { session: sessions[1], program: path.join(desktop.projectPath, 'bob-verify.cjs'), marker: 'COMMAND_EXEC:' + nonce.bob, model, comment: `TASK_COMMENT:${nonce.bob}` });
+    commandExpectations.set(bob.id, { session: sessions[1], executable: testNode.executable, program: path.join(desktop.projectPath, 'bob-verify.cjs'), marker: 'COMMAND_EXEC:' + nonce.bob, model, comment: `TASK_COMMENT:${nonce.bob}` });
     await completed(app, bob.id, 'bob', `TASK_COMMENT:${nonce.bob}`, recordCompletion);
     const bobCommandEvidence = await commandEvidence(
       app,
@@ -2474,10 +2539,10 @@ async function main() {
       sessions[1],
       path.join(desktop.projectPath, 'bob-verify.cjs'),
       'COMMAND_EXEC:' + nonce.bob,
-      version,
+      testNode.executable,
       model
     );
-    proof.commandEvidenceConfirmed.push({ member: 'bob', kind: bobCommandEvidence });
+    proof.commandEvidenceConfirmed.push({ member: 'bob', ...bobCommandEvidence });
     for (const name of ['alice', 'bob'] as const)
       proof.fileHashes[`${name}-result.txt`] = await exactFile(
         desktop.projectPath,
@@ -2586,7 +2651,7 @@ async function main() {
             }
           })
         );
-        const observation = { matched, routes, challengeDeliveries };
+        const observation = { matched, routes, textShapes: projectWindowsPeerTextRows(rows, nonce), challengeDeliveries };
         const encoded = JSON.stringify(observation);
         if (encoded !== previousPeerObservation) {
           proof.peerObservation = observation;
@@ -2704,6 +2769,7 @@ async function main() {
     await checkpoint('held-stop');
     const held = await hold('initial');
     proof.heldStopConfirmed = true;
+    await checkpoint('restart-persistence');
     await app.close();
     assert(/^[a-zA-Z0-9_-]+$/.test(held.task.id));
     const retainedPath = path.join(
@@ -2723,8 +2789,11 @@ async function main() {
     assert.equal(await app.call('processAlive'), false);
     assert(Object.values((await app.call('getRuntime')).members).every((member) => !member.alive));
     const loaded = (await app.call('getData')).tasks.find((task) => task.id === held.task.id);
+    const persistedAfterRestart = JSON.parse(await readFile(retainedPath, 'utf8'));
+    proof.persistenceDifference = projectTaskPersistenceDifference(retained, persistedAfterRestart);
+    await checkpoint('restart-persistence');
     assert(loaded && loaded.owner === retained.owner && loaded.status === retained.status);
-    assert.deepEqual(JSON.parse(await readFile(retainedPath, 'utf8')), retained);
+    assert.deepEqual(persistedAfterRestart, retained);
     assert.equal(await readFile(held.marker, 'utf8'), held.markerBytes);
     proof.persistenceConfirmed = true;
     await checkpoint('restart-persistence');
@@ -2777,7 +2846,7 @@ async function main() {
     });
     proof.taskIds.push(task.id);
     taskOwners.set(task.id, 'alice');
-    commandExpectations.set(task.id, { session: newSessions[0], program: path.join(desktop.projectPath, 'new-verify.cjs'), marker: 'COMMAND_EXEC:' + nonce.new, model, comment: `TASK_COMMENT:${nonce.new}` });
+    commandExpectations.set(task.id, { session: newSessions[0], executable: testNode.executable, program: path.join(desktop.projectPath, 'new-verify.cjs'), marker: 'COMMAND_EXEC:' + nonce.new, model, comment: `TASK_COMMENT:${nonce.new}` });
     await completed(app, task.id, 'alice', `TASK_COMMENT:${nonce.new}`, recordCompletion);
     const freshCommandEvidence = await commandEvidence(
       app,
@@ -2786,10 +2855,10 @@ async function main() {
       newSessions[0],
       path.join(desktop.projectPath, 'new-verify.cjs'),
       'COMMAND_EXEC:' + nonce.new,
-      version,
+      testNode.executable,
       model
     );
-    proof.commandEvidenceConfirmed.push({ member: 'alice-fresh', kind: freshCommandEvidence });
+    proof.commandEvidenceConfirmed.push({ member: 'alice-fresh', ...freshCommandEvidence });
     proof.fileHashes['new-result.txt'] = await exactFile(
       desktop.projectPath,
       'new-result.txt',
@@ -2894,6 +2963,26 @@ async function main() {
             selectedModel: model, runtimePromptMessageId,
             command: commandExpectations.get(failedTask.id) });
           capture.observation = 'captured';
+          capture.terminalEvent = { observation: 'unavailable' };
+          capture.candidateProjection = { observation: 'unavailable' };
+          capture.requestedInput = 'unknown';
+          try {
+            const sdkRoot = process.env.OPENCODE_NATIVE_DIAGNOSTIC_SDK_ROOT;
+            assert(sdkRoot && path.isAbsolute(sdkRoot) && /(?:^|[\\/])TEST-[^\\/]+(?:[\\/]|$)/.test(sdkRoot));
+            const gitOptions = { env: desktop.env, cwd: desktop.projectPath, timeout: Math.min(5000, Math.max(1, captureDeadline - Date.now())), maxBuffer: 4096, signal: captureController.signal };
+            assert.equal((await execute('git', ['-C', sdkRoot, 'rev-parse', 'HEAD'], gitOptions)).stdout.trim(), bundled.bundledSdkSha);
+            assert.equal((await execute('git', ['-C', sdkRoot, 'status', '--porcelain', '--untracked-files=all', '--ignored=matching', '--', 'src'], gitOptions)).stdout, '');
+            const { stdout: terminal } = await execute(bun,
+              ['--no-env-file', `--config=${bunConfig}`, '--eval', v2TerminalFailureReaderCode(), JSON.stringify({
+                sdkRoot, projectorPath: fileURLToPath(new URL('./opencode-diagnostics/v2-terminal-failure.ts', import.meta.url)),
+                dataRoot: desktop.env.CLAUDE_MULTIMODEL_DATA_HOME, teamId: desktop.teamName,
+                runId: proof.runIds.at(-1), memberId: failedTask.owner, sessionId: nativeSession, nativeInputId: runtimePromptMessageId, nativeVersion: version,
+              })], { env: desktop.env, cwd: desktop.projectPath, timeout: Math.max(1, captureDeadline - Date.now()), maxBuffer: 8192, signal: captureController.signal });
+            const fact = reprojectV2OwnedSessionDiagnostic(JSON.parse(terminal));
+            capture.terminalEvent = fact.terminalEvent;
+            capture.candidateProjection = fact.candidateProjection;
+            capture.requestedInput = fact.requestedInput;
+          } catch { /* Missing trusted source, original input or live owner stays unavailable. */ }
         }
         })().finally(async () => {
           // Also retire any setup file whose asynchronous write settled after the cutoff.

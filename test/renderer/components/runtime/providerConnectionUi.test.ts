@@ -250,7 +250,7 @@ describe('providerConnectionUi', () => {
   it('treats the OpenCode summary-only big-pickle model as catalog hydration', () => {
     const provider: CliProviderStatus = {
       providerId: 'opencode',
-      displayName: 'OpenCode (200+ models)',
+      displayName: 'OpenCode (200+ providers)',
       supported: true,
       authenticated: true,
       authMethod: 'opencode_managed',
@@ -505,6 +505,26 @@ describe('providerConnectionUi', () => {
     expect(getProviderCredentialSummary(provider)).toBe(
       'Detected from OPENAI_API_KEY - Auto will use this until ChatGPT is connected'
     );
+  });
+
+  it('shows the runtime check failure when a saved Codex account is ready', () => {
+    const provider: CliProviderStatus = {
+      ...createCodexProvider({
+        codex: {
+          ...createCodexProvider().connection!.codex!,
+          effectiveAuthMode: 'chatgpt',
+          launchAllowed: true,
+        },
+      }),
+      authenticated: false,
+      authMethod: null,
+      verificationState: 'error',
+      statusCheckOutcome: 'transient_error',
+      statusCheckErrorCode: 'timeout',
+      statusMessage: 'Provider status unavailable',
+    };
+
+    expect(formatProviderStatusText(provider)).toBe('Provider status unavailable');
   });
 
   it('surfaces native backend status instead of flattening Codex to connected-via-api-key text', () => {

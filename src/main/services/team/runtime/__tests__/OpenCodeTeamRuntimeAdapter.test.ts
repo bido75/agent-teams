@@ -1,4 +1,5 @@
 import { stripAgentBlocks, unwrapAgentBlock } from '@shared/constants/agentBlocks';
+import { protocols } from 'agent-teams-controller';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -67,6 +68,126 @@ describe('OpenCodeTeamRuntimeAdapter runtime permission messages', () => {
 });
 
 describe('OpenCodeTeamRuntimeAdapter launch readiness', () => {
+  it('does not dispatch after Stop wins while readiness is pending', async () => {
+    let readinessEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      readinessEntered = resolve;
+    });
+    let release!: (value: OpenCodeTeamLaunchReadiness) => void;
+    const pending = new Promise<OpenCodeTeamLaunchReadiness>((resolve) => {
+      release = resolve;
+    });
+    const launchOpenCodeTeam =
+      vi.fn<NonNullable<OpenCodeTeamRuntimeBridgePort['launchOpenCodeTeam']>>();
+    const adapter = new OpenCodeTeamRuntimeAdapter({
+      checkOpenCodeTeamLaunchReadiness: vi.fn(() => {
+        readinessEntered();
+        return pending;
+      }),
+      launchOpenCodeTeam,
+    });
+    let cancelled = false;
+    const launching = adapter.launch({ ...launchInput(), mayDispatch: () => !cancelled });
+    await entered;
+    cancelled = true;
+    release(readiness({ launchAllowed: true, state: 'ready' }));
+    const result = await launching;
+    expect(launchOpenCodeTeam).not.toHaveBeenCalled();
+    expect(result.preLaunchGate).toMatchObject({
+      blocked: true,
+      reason: 'opencode_launch_cancelled',
+    });
+  });
+
+  it('does not redispatch after Stop wins during capability refresh', async () => {
+    let refreshEntered!: () => void;
+    let release!: (value: OpenCodeTeamLaunchReadiness) => void;
+    const entered = new Promise<void>((resolve) => {
+      refreshEntered = resolve;
+    });
+    const pending = new Promise<OpenCodeTeamLaunchReadiness>((resolve) => {
+      release = resolve;
+    });
+    const ready = readiness({ launchAllowed: true, state: 'ready' });
+    const check = vi
+      .fn<OpenCodeTeamRuntimeBridgePort['checkOpenCodeTeamLaunchReadiness']>()
+      .mockResolvedValueOnce(ready)
+      .mockImplementationOnce(() => {
+        refreshEntered();
+        return pending;
+      });
+    const launchOpenCodeTeam = vi.fn<
+      NonNullable<OpenCodeTeamRuntimeBridgePort['launchOpenCodeTeam']>
+    >(async () => ({
+      runId: 'run-launch',
+      teamLaunchState: 'failed',
+      members: {},
+      warnings: [],
+      diagnostics: [
+        {
+          code: 'opencode_launch_failed',
+          severity: 'error',
+          message: 'Bridge server capability snapshot mismatch',
+        },
+      ],
+    }));
+    const adapter = new OpenCodeTeamRuntimeAdapter({
+      checkOpenCodeTeamLaunchReadiness: check,
+      launchOpenCodeTeam,
+      getLastOpenCodeRuntimeSnapshot: () =>
+        ({ capabilitySnapshotId: 'capability-1' }) as ReturnType<
+          NonNullable<OpenCodeTeamRuntimeBridgePort['getLastOpenCodeRuntimeSnapshot']>
+        >,
+    });
+    let cancelled = false;
+    const launching = adapter.launch({ ...launchInput(), mayDispatch: () => !cancelled });
+    await entered;
+    cancelled = true;
+    release(ready);
+    const result = await launching;
+    expect(launchOpenCodeTeam).toHaveBeenCalledTimes(1);
+    expect(result.preLaunchGate).toBeUndefined();
+    expect(result.diagnostics).toContain(
+      'OpenCode team launch was cancelled during capability refresh.'
+    );
+  });
+
+  it('preserves native admission on the capability refresh retry', async () => {
+    const canDispatch = vi.fn(() => true);
+    const launchOpenCodeTeam = vi
+      .fn<NonNullable<OpenCodeTeamRuntimeBridgePort['launchOpenCodeTeam']>>()
+      .mockResolvedValueOnce({
+        runId: 'run-launch',
+        teamLaunchState: 'failed',
+        members: {},
+        warnings: [],
+        diagnostics: [
+          {
+            code: 'opencode_launch_failed',
+            severity: 'error',
+            message: 'Bridge server capability snapshot mismatch',
+          },
+        ],
+      })
+      .mockResolvedValueOnce(launchData('created', 'a'.repeat(64)));
+    const adapter = new OpenCodeTeamRuntimeAdapter({
+      checkOpenCodeTeamLaunchReadiness: vi.fn(async () =>
+        readiness({ launchAllowed: true, state: 'ready' })
+      ),
+      launchOpenCodeTeam,
+      getLastOpenCodeRuntimeSnapshot: () =>
+        ({ capabilitySnapshotId: 'capability-1' }) as ReturnType<
+          NonNullable<OpenCodeTeamRuntimeBridgePort['getLastOpenCodeRuntimeSnapshot']>
+        >,
+    });
+    await adapter.launch({ ...launchInput(), mayDispatch: canDispatch });
+    expect(launchOpenCodeTeam).toHaveBeenCalledTimes(2);
+    expect(launchOpenCodeTeam.mock.calls.map((call) => call[1])).toEqual([
+      canDispatch,
+      canDispatch,
+    ]);
+  });
+
   it('refreshes a reusable execution proof before a state-changing launch', async () => {
     const temporarilyUnavailable = readiness({
       launchAllowed: false,
@@ -254,6 +375,18 @@ describe('OpenCodeTeamRuntimeAdapter delivery prompt contracts', () => {
     return String(bridgePayload?.text ?? '');
   }
 
+  it.each([undefined, 'group-1'])(
+    'advertises OpenUI in delivered messages without changing reply routing (group=%s)',
+    async (groupChatId) => {
+      const prompt = await deliveredPromptText('user', groupChatId);
+      expect(prompt).toContain(protocols.buildChatVisualizationRefreshInstruction());
+      expect(prompt).toContain('if the complete display library specification is missing');
+      expect(prompt).toContain(groupChatId ? 'group_chat_send' : 'agent-teams_message_send');
+      if (groupChatId)
+        expect(prompt).toContain('Never substitute message_send or a private user reply');
+    }
+  );
+
   it('builds an informational FYI envelope for the reserved "system" reply recipient', async () => {
     const text = await deliveredPromptText('system');
 
@@ -297,6 +430,18 @@ describe('OpenCodeTeamRuntimeAdapter delivery prompt contracts', () => {
     expect(groupText).toContain('Never substitute message_send or a private user reply.');
     expect(groupText).toContain('Do not repair, retry in another destination, or echo privately.');
     expect(groupText).not.toContain('Required message_send argument envelope');
+  });
+
+  it('keeps an exact roster peer called team_lead on the optional peer contract', () => {
+    const base = {
+      teamName: 'team-a', laneId: 'secondary:opencode:Worker', memberName: 'Worker',
+      cwd: '/repo', text: 'Current status?', replyRecipient: 'team_lead',
+    };
+    const peerText = buildOpenCodeRuntimeMessageText({ ...base, knownPeerRecipient: true });
+    const aliasText = buildOpenCodeRuntimeMessageText({ ...base, knownPeerRecipient: false });
+    expect(peerText).toContain('status report from your teammate "team_lead"');
+    expect(peerText).not.toContain('Required message_send argument envelope');
+    expect(aliasText).toContain('Required message_send argument envelope');
   });
 
   it('builds a reply-optional teammate report envelope for teammate reply recipients', async () => {
@@ -495,6 +640,20 @@ describe('buildMemberBootstrapPrompt', () => {
     expect(briefing).not.toContain('Never act on the launch context');
   });
 
+  it.each(['Worker', 'team-lead'])(
+    'keeps OpenUI discoverable for a primary member with no launch prompt (%s)',
+    (name) => {
+      const input = { ...launchInput(), prompt: '' };
+      const member = { ...input.expectedMembers[0], name };
+      const briefing = unwrapAgentBlock(buildMemberBootstrapPrompt(input, member));
+      expect(briefing).toContain(protocols.buildChatVisualizationRefreshInstruction());
+      expect(briefing).toContain('After launch readiness is confirmed');
+      expect(briefing).toContain('Do not refresh merely to acknowledge this reminder');
+      expect(briefing).toContain('Launch bootstrap is a silent attach');
+      expect(briefing).not.toContain('Team launch context');
+    }
+  );
+
   it('wraps the unchanged app-managed briefing in the shared agent block', () => {
     const input = { ...launchInput(), prompt: '  Complete the scoped fix.  ' };
 
@@ -532,6 +691,7 @@ describe('buildMemberBootstrapPrompt', () => {
         'When you need to message the human user, team lead, or another teammate, call MCP tool agent-teams_message_send (or mcp__agent-teams__message_send) with teamName, to, from, text, and optional summary.',
         'Always set from="Worker" when sending a team message from this OpenCode teammate.',
         'Do not answer team/app messages only as plain assistant text when agent-teams_message_send is available.',
+        protocols.buildChatVisualizationRefreshInstruction(),
         '</agent_teams_app_managed_bootstrap_briefing>',
       ].join('\n')
     );

@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,7 +19,18 @@ import {
   retainPackagedLineage,
 } from './opencode-diagnostics/packaged.mjs';
 import { verifyPackaged } from './opencode-diagnostics/packaged-verify.mjs';
-import { catalogScenarios, verifyCatalog } from './opencode-diagnostics/catalog.mjs';
+import {
+  prepareRealRuntimeFixture,
+  realRuntimeEnvironment,
+  verifyColdDashboardConnectedCount,
+  verifyRealRuntimeElectron,
+} from './opencode-diagnostics/real-runtime.mjs';
+import {
+  catalogScenarios,
+  enterProviderSettings,
+  verifyCatalog,
+  waitForReadyCatalog,
+} from './opencode-diagnostics/catalog.mjs';
 import {
   processes,
   sameIdentity,
@@ -27,6 +38,7 @@ import {
   listeners,
   assertListenerOwnership,
   assertPortAvailable,
+  allocateIsolatedCdpPort,
   fixtureShim,
   launchCommand,
   isolatedEnvironment,
@@ -87,11 +99,12 @@ async function ownedProcesses() {
 }
 
 async function assertOwnedDebugEndpoint(receipt) {
+  const cdpPort = (await manifest()).cdpPort ?? 9222;
   // Retain the existing bounded recheck, without assuming the cause of snapshot differences.
   // Missing/reused launcher or foreign listeners still fail closed.
   for (let attempt = 0; attempt < 3; attempt++) {
     // Read listeners first so children born during lsof are in the later ancestry snapshot.
-    const ids = listeners();
+    const ids = listeners(cdpPort);
     const owned = await ownedProcesses();
     try {
       assertListenerOwnership(ids, owned);
@@ -160,7 +173,7 @@ async function assertOwnedDebugEndpoint(receipt) {
       try {
         receipt.verifiedOwnership = {
           at: Date.now(),
-          endpointPort: 9222,
+          endpointPort: cdpPort,
           browser: listenerProcesses.slice(0, 8).map((p) => ({
             pid: p.pid,
             parent: p.parent,
@@ -181,7 +194,8 @@ async function assertOwnedDebugEndpoint(receipt) {
 if (mode === 'seed-packaged') {
   const options = packagedArguments(process.argv.slice(3));
   const artifact = await packagedArtifact(options.executable, options.candidateEvidence);
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'opencode-diagnostics-e2e-'));
+  // Canonicalize only this newly created TEST directory, before deriving owned paths.
+  const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'opencode-diagnostics-e2e-')));
   const data = {
     root: dir,
     home: path.join(dir, 'home'),
@@ -198,11 +212,34 @@ if (mode === 'seed-packaged') {
   data.projectSentinel = await prepareExistingProject(data);
   await writeFile(path.join(dir, 'manifest.json'), JSON.stringify(data, null, 2));
   console.log(dir);
+} else if (mode === 'seed-real') {
+  assert(root === undefined, 'Seed real provider test only in a fresh sandbox');
+  // The test-only screenshot and sanitized receipt must live under runner.temp,
+  // not os.tmpdir() (which can be /tmp on Linux cloud runners).
+  const tempParent = process.env.RUNNER_TEMP && path.isAbsolute(process.env.RUNNER_TEMP)
+    ? process.env.RUNNER_TEMP
+    : os.tmpdir();
+  const dir = await realpath(await mkdtemp(path.join(tempParent, 'opencode-diagnostics-e2e-')));
+  const data = {
+    root: dir,
+    home: path.join(dir, 'TEST-home'),
+    userData: path.join(dir, 'user-data'),
+    bin: path.join(dir, 'bin'),
+    temp: path.join(dir, 'tmp'),
+    node: process.execPath,
+    platform: process.platform,
+    cdpPort: await allocateIsolatedCdpPort(),
+  };
+  await prepareRealRuntimeFixture(data, repo);
+  await writeFile(path.join(dir, 'scenario'), 'real-connected');
+  await writeFile(path.join(dir, 'manifest.json'), JSON.stringify(data, null, 2));
+  console.log(dir);
 } else if (mode === 'seed') {
   const seededScenario = root || 'version-exit';
   assert(['version-exit', cleanupScenario].includes(seededScenario), 'Unsupported seed scenario');
   if (seededScenario === cleanupScenario) assert.equal(process.platform, 'win32');
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'opencode-diagnostics-e2e-'));
+  // Canonicalize only this newly created TEST directory, before deriving owned paths.
+  const dir = await realpath(await mkdtemp(path.join(os.tmpdir(), 'opencode-diagnostics-e2e-')));
   const data = {
     root: dir,
     home: path.join(dir, 'home'),
@@ -212,6 +249,7 @@ if (mode === 'seed-packaged') {
     node: process.execPath,
     fixture: path.join(dir, 'fixture.cjs'),
     platform: process.platform,
+    cdpPort: await allocateIsolatedCdpPort(),
   };
   for (const value of [data.home, data.userData, data.bin, data.temp])
     await mkdir(value, { recursive: true });
@@ -368,6 +406,19 @@ if (mode === 'seed-packaged') {
         record.outcome = 'missing-from-identity-snapshot';
         continue;
       }
+      assert(
+        entry.pid === current.pid &&
+          typeof entry.birth === 'string' &&
+          Number.isFinite(Date.parse(entry.birth)) &&
+          typeof current.birth === 'string' &&
+          Number.isFinite(Date.parse(current.birth)),
+        'Invalid process birth identity; refusing signal'
+      );
+      if (entry.birth !== current.birth) {
+        // The original process retired; its PID grants no authority over its replacement.
+        record.outcome = 'pid-reused-original-retired';
+        continue;
+      }
       sameIdentity(entry, current);
       try {
         process.kill(entry.pid, 'SIGTERM');
@@ -386,6 +437,7 @@ if (mode === 'seed-packaged') {
   const data = await manifest();
   assert(!data.launcher, 'Sandbox already started; seed a new sandbox');
   const env = data.packaged ? await preparePackagedProfile(data) : isolatedEnvironment(data);
+  if (data.realRuntime) Object.assign(env, realRuntimeEnvironment(data));
   if (data.packaged) {
     assert.equal(process.platform, 'win32');
     assert.deepEqual(
@@ -394,17 +446,18 @@ if (mode === 'seed-packaged') {
       'App artifact changed'
     );
   } else assertNoInstalledOpenCode(data);
-  await assertPortAvailable();
+  const cdpPort = data.cdpPort ?? 9222;
+  await assertPortAvailable(cdpPort);
   const launch = data.packaged
     ? {
         command: data.artifact.app.path,
         args: [
-          '--remote-debugging-port=9222',
+          `--remote-debugging-port=${cdpPort}`,
           '--remote-debugging-address=127.0.0.1',
           `--user-data-dir=${data.userData}`,
         ],
       }
-    : launchCommand();
+    : launchCommand(process.platform, cdpPort);
   if (data.packaged) {
     // The foreground harness is the ancestor; the Electron main process owns CDP.
     data.launcher = processes().find((p) => p.pid === process.pid);
@@ -456,9 +509,10 @@ if (mode === 'seed-packaged') {
   });
 } else if (mode === 'inspect' || mode === 'verify') {
   const data = await manifest();
+  const cdpPort = data.cdpPort ?? 9222;
   await assertOwnedDebugEndpoint();
   const targets = await (
-    await fetch('http://127.0.0.1:9222/json/list', { signal: AbortSignal.timeout(10000) })
+    await fetch(`http://127.0.0.1:${cdpPort}/json/list`, { signal: AbortSignal.timeout(10000) })
   ).json();
   const target = data.packaged
     ? packagedTarget(targets, data.artifact.renderer, true, path.win32)
@@ -469,7 +523,7 @@ if (mode === 'seed-packaged') {
   const endpoint = new URL(target.webSocketDebuggerUrl);
   assert(
     ['127.0.0.1', 'localhost', '[::1]'].includes(endpoint.hostname) &&
-      endpoint.port === '9222' &&
+      endpoint.port === String(cdpPort) &&
       endpoint.protocol === 'ws:',
     'Unexpected CDP endpoint'
   );
@@ -560,11 +614,41 @@ if (mode === 'seed-packaged') {
           'JSON.stringify({ready:document.readyState,resources:performance.getEntriesByType("resource").slice(-6).map(r=>({name:r.name,duration:r.duration})),scripts:[...document.scripts].map(s=>s.src)})'
         )
       );
+      if (data.realRuntime) {
+        // A CDP endpoint can exist before React mounts. Do not time a blank renderer.
+        const mounted = await evaluate(
+          "Boolean(document.querySelector('[data-testid=dashboard-provider-summary]')?.getClientRects().length)"
+        );
+        console.log('E2E_DASHBOARD_MOUNTED=' + mounted);
+      }
     } else if (data.packaged) {
       await verifyPackaged({ root, data, evaluate, send, preloadScripts, scriptMetadata });
     } else {
       const scenario = (await readFile(path.join(root, 'scenario'), 'utf8')).trim();
-      if (scenario === cleanupScenario) {
+      // A real-runtime cold count must be proven before Settings can seed the cache.
+      const coldDashboard = scenario === 'real-connected'
+        ? await verifyColdDashboardConnectedCount({ root, evaluate, send })
+        : null;
+      // Startup cleanup also needs the mounted Providers page: its Manage
+      // control no longer lives on the passive Dashboard summary.
+      try {
+        await enterProviderSettings(evaluate, send);
+      } catch (navigationError) {
+        // Preserve an actual screenshot if navigation cannot become visible.
+        try {
+          const screenshot = await send('Page.captureScreenshot');
+          await writeFile(
+            path.join(root, `navigation-failure-${scenario}.png`),
+            Buffer.from(screenshot.data, 'base64')
+          );
+        } catch {
+          /* Keep the original navigation failure. */
+        }
+        throw navigationError;
+      }
+      if (scenario === 'real-connected') {
+        await verifyRealRuntimeElectron({ root, data, evaluate, send, coldDashboard });
+      } else if (scenario === cleanupScenario) {
         await verifyStartupCleanup({ root, evaluate, send });
       } else if (catalogScenarios.includes(scenario)) {
         await verifyCatalog({ root, scenario, evaluate, send });
@@ -621,6 +705,8 @@ if (mode === 'seed-packaged') {
             refreshClicked && recovered && !found,
             'Retry did not complete a fresh successful version probe'
           );
+          // Do not relabel still-running catalog children when the recipe switches fixtures.
+          await waitForReadyCatalog({ root, started: verifyStarted, evaluate, send });
           console.log(JSON.stringify({ passed: true, scenario, platform: process.platform }));
           const screenshot = await send('Page.captureScreenshot');
           await writeFile(path.join(root, 'ready.png'), Buffer.from(screenshot.data, 'base64'));
@@ -709,5 +795,5 @@ if (mode === 'seed-packaged') {
   }
 } else
   throw new Error(
-    'Usage: seed [startup-cleanup] | seed-packaged --packaged-executable <exe> [--runtime-setup app-install] | start <sandbox> | inspect <sandbox> | verify <sandbox> | stop <sandbox>'
+    'Usage: seed [startup-cleanup] | seed-real | seed-packaged --packaged-executable <exe> [--runtime-setup app-install] | start <sandbox> | inspect <sandbox> | verify <sandbox> | stop <sandbox>'
   );

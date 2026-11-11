@@ -4,6 +4,7 @@ import {
 } from '@shared/utils/providerStatusAuthority';
 
 import {
+  createPendingProviderStatus,
   createRuntimeStatusErrorProviderStatus,
   sanitizeProviderStatusAuthority,
 } from '../runtime/providerStatusCheckContract';
@@ -44,6 +45,24 @@ export function isPublishedProvider(providerId: CliProviderId): boolean {
 
 export function filterPublishedProviders(providers: CliProviderStatus[]): CliProviderStatus[] {
   return providers.filter((provider) => isPublishedProvider(provider.providerId));
+}
+
+export function createObsoleteProviderStatus(providerId: CliProviderId): CliProviderStatus {
+  return createRuntimeStatusErrorProviderStatus(
+    providerId,
+    new Error('Provider runtime changed during status check. Refresh to retry.')
+  );
+}
+
+/** A superseded read cannot turn a transport failure into current provider evidence. */
+export function createProviderReadFailureStatus(
+  providerId: CliProviderId,
+  error: unknown,
+  readIsCurrent: boolean | undefined
+): CliProviderStatus {
+  return readIsCurrent === false
+    ? createPendingProviderStatus(providerId)
+    : createRuntimeStatusErrorProviderStatus(providerId, error);
 }
 
 export function projectProviderAuthority(

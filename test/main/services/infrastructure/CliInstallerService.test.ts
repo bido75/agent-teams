@@ -550,7 +550,7 @@ describe('CliInstallerService', () => {
         'cline',
       ]);
       expect(openCodeStatus).toMatchObject({
-        displayName: 'OpenCode (200+ models)',
+        displayName: 'OpenCode (200+ providers)',
         supported: false,
         statusMessage: 'Runtime not found.',
         canLoginFromUi: false,
