@@ -94,7 +94,6 @@ export function mergeProviderStatusPublication(
       ? provider
       : projectProviderAuthority(provider, now)
   );
-  );
   return {
     providers,
     authLoggedIn: hasAuthenticatedFrontendProvider(providers),

@@ -77,12 +77,14 @@ export const SmartScheduleFields = ({
       if (!name || seen.has(key)) return [];
       if (name !== leadName && validateTeamMemberNameFormat(name)) return [];
       seen.add(key);
-      return [{
-        name,
-        agentId: member.agentId,
-        role: member.role,
-        color: member.color,
-      }];
+      return [
+        {
+          name,
+          agentId: member.agentId,
+          role: member.role,
+          color: member.color,
+        },
+      ];
     });
   }, [leadName, team]);
   const missingSavedMember = Boolean(
@@ -123,101 +125,121 @@ export const SmartScheduleFields = ({
         ) : null}
       </button>
       {expanded ? (
-      <div className="space-y-3 border-t border-[var(--color-border)] px-3 pb-3 pt-2">
-        <div className="space-y-1.5">
-        <Label className="text-xs">{t('launch.schedule.execution')}</Label>
-        {mode === 'legacy' ? (
-          <div className="rounded border border-[var(--color-border)] p-2 text-xs text-[var(--color-text-secondary)]">
-            {t('launch.schedule.legacyNotice')}
-            <button
-              type="button"
-              className="ml-2 underline"
-              onClick={() => onModeChange('agent')}
-            >
-              {t('launch.schedule.upgradeSmart')}
-            </button>
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-2" role="group" aria-label={t('launch.schedule.execution')}>
-            {(['agent', 'team'] as const).map((option) => (
-              <button
-                key={option}
-                type="button"
-                aria-pressed={mode === option}
-                className={`rounded-md border px-3 py-2 text-xs font-medium transition-colors ${mode === option ? 'border-[var(--color-border-emphasis)] bg-[var(--color-surface-raised)] text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-secondary)]'}`}
-                onClick={() => onModeChange(option)}
+        <div className="space-y-3 border-t border-[var(--color-border)] px-3 pb-3 pt-2">
+          <div className="space-y-1.5">
+            <Label className="text-xs">{t('launch.schedule.execution')}</Label>
+            {mode === 'legacy' ? (
+              <div className="rounded border border-[var(--color-border)] p-2 text-xs text-[var(--color-text-secondary)]">
+                {t('launch.schedule.legacyNotice')}
+                <button
+                  type="button"
+                  className="ml-2 underline"
+                  onClick={() => onModeChange('agent')}
+                >
+                  {t('launch.schedule.upgradeSmart')}
+                </button>
+              </div>
+            ) : (
+              <div
+                className="grid grid-cols-2 gap-2"
+                role="group"
+                aria-label={t('launch.schedule.execution')}
               >
-                {t(option === 'agent' ? 'launch.schedule.oneAgent' : taskFirst ? 'launch.schedule.taskFirstWholeTeam' : 'launch.schedule.wholeTeam')}
-              </button>
-            ))}
-          </div>
-        )}
-        {mode === 'agent' ? (
-          <>
-            <Label className="text-xs">
-              {t(taskFirst ? 'launch.schedule.taskFirstTarget' : 'launch.schedule.target')}
-            </Label>
-            <MemberSelect
-              members={recipientMembers}
-              value={pickerTarget}
-              onChange={(name) => onTargetMemberChange(name === leadName ? '' : (name ?? ''))}
-              placeholder={
-                savedTarget && !recipientMembers.some((member) => member.name === pickerTarget)
-                  ? savedTarget
-                  : t('launch.schedule.leadDefault')
-              }
-              getMemberLabel={(member) =>
-                member.name !== leadName
-                  ? member.name
-                  : leadName === 'team-lead'
-                    ? t('launch.schedule.leadDefault')
-                    : `${leadName} — ${t('launch.schedule.leadDefault')}`
-              }
-              ariaLabel={t(taskFirst ? 'launch.schedule.taskFirstTarget' : 'launch.schedule.target')}
-              size="md"
-            />
-            {missingSavedMember ? (
-              <p role="alert" className="text-xs text-[var(--warning-text)]">
-                {t('messages.manualQueue.recipientUnavailable')}
+                {(['agent', 'team'] as const).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    aria-pressed={mode === option}
+                    className={`rounded-md border px-3 py-2 text-xs font-medium transition-colors ${mode === option ? 'border-[var(--color-border-emphasis)] bg-[var(--color-surface-raised)] text-[var(--color-text)]' : 'border-[var(--color-border)] text-[var(--color-text-secondary)]'}`}
+                    onClick={() => onModeChange(option)}
+                  >
+                    {t(
+                      option === 'agent'
+                        ? 'launch.schedule.oneAgent'
+                        : taskFirst
+                          ? 'launch.schedule.taskFirstWholeTeam'
+                          : 'launch.schedule.wholeTeam'
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+            {mode === 'agent' ? (
+              <>
+                <Label className="text-xs">
+                  {t(taskFirst ? 'launch.schedule.taskFirstTarget' : 'launch.schedule.target')}
+                </Label>
+                <MemberSelect
+                  members={recipientMembers}
+                  value={pickerTarget}
+                  onChange={(name) => onTargetMemberChange(name === leadName ? '' : (name ?? ''))}
+                  placeholder={
+                    savedTarget && !recipientMembers.some((member) => member.name === pickerTarget)
+                      ? savedTarget
+                      : t('launch.schedule.leadDefault')
+                  }
+                  getMemberLabel={(member) =>
+                    member.name !== leadName
+                      ? member.name
+                      : leadName === 'team-lead'
+                        ? t('launch.schedule.leadDefault')
+                        : `${leadName} — ${t('launch.schedule.leadDefault')}`
+                  }
+                  ariaLabel={t(
+                    taskFirst ? 'launch.schedule.taskFirstTarget' : 'launch.schedule.target'
+                  )}
+                  size="md"
+                />
+                {missingSavedMember ? (
+                  <p role="alert" className="text-xs text-[var(--warning-text)]">
+                    {t('messages.manualQueue.recipientUnavailable')}
+                  </p>
+                ) : null}
+                {invalidRosterNames.map(({ name, reason }) => (
+                  <p key={name} className="text-xs text-[var(--color-text-muted)]">
+                    {name}: {reason}
+                  </p>
+                ))}
+                <p className="text-[11px] text-[var(--color-text-muted)]">
+                  {t(
+                    taskFirst
+                      ? 'launch.schedule.taskFirstAgentDescription'
+                      : 'launch.schedule.agentDescription'
+                  )}
+                </p>
+              </>
+            ) : mode === 'team' ? (
+              <p className="text-[11px] text-[var(--color-text-muted)]">
+                {t(
+                  taskFirst
+                    ? 'launch.schedule.taskFirstTeamDescription'
+                    : 'launch.schedule.teamDescription'
+                )}
               </p>
             ) : null}
-            {invalidRosterNames.map(({ name, reason }) => (
-              <p key={name} className="text-xs text-[var(--color-text-muted)]">
-                {name}: {reason}
-              </p>
-            ))}
-            <p className="text-[11px] text-[var(--color-text-muted)]">
-              {t(taskFirst ? 'launch.schedule.taskFirstAgentDescription' : 'launch.schedule.agentDescription')}
-            </p>
-          </>
-        ) : mode === 'team' ? (
-          <p className="text-[11px] text-[var(--color-text-muted)]">
-            {t(taskFirst ? 'launch.schedule.taskFirstTeamDescription' : 'launch.schedule.teamDescription')}
-          </p>
-        ) : null}
-      </div>
-      <div className="space-y-1.5">
-        <Label htmlFor="schedule-label" className="label-optional">
-          {t('launch.schedule.labelOptional')}
-        </Label>
-        <Input
-          id="schedule-label"
-          className="h-8 text-xs"
-          value={label}
-          onChange={(event) => onLabelChange(event.target.value)}
-          placeholder={t('launch.schedule.labelPlaceholder')}
-        />
-      </div>
-      <CronScheduleInput
-        showWarmUp={mode === 'legacy'}
-        cronExpression={cronExpression}
-        onCronExpressionChange={onCronExpressionChange}
-        timezone={timezone}
-        onTimezoneChange={onTimezoneChange}
-        warmUpMinutes={warmUpMinutes}
-        onWarmUpMinutesChange={onWarmUpMinutesChange}
-      />
-      </div>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="schedule-label" className="label-optional">
+              {t('launch.schedule.labelOptional')}
+            </Label>
+            <Input
+              id="schedule-label"
+              className="h-8 text-xs"
+              value={label}
+              onChange={(event) => onLabelChange(event.target.value)}
+              placeholder={t('launch.schedule.labelPlaceholder')}
+            />
+          </div>
+          <CronScheduleInput
+            showWarmUp={mode === 'legacy'}
+            cronExpression={cronExpression}
+            onCronExpressionChange={onCronExpressionChange}
+            timezone={timezone}
+            onTimezoneChange={onTimezoneChange}
+            warmUpMinutes={warmUpMinutes}
+            onWarmUpMinutesChange={onWarmUpMinutesChange}
+          />
+        </div>
       ) : null}
     </div>
   );

@@ -34,16 +34,20 @@ interface ResolveScheduleLaunchConfigInput {
 
 /** Keep the exact legacy runtime configuration until the user changes it. */
 export function resolveScheduleLaunchConfig({
-  schedule, mode, taskFirst, savedTeam, edited, proposed,
+  schedule,
+  mode,
+  taskFirst,
+  savedTeam,
+  edited,
+  proposed,
 }: ResolveScheduleLaunchConfigInput): ScheduleLaunchConfig {
   const preserveTeam = Boolean(
     schedule?.executionMode === 'team' && mode === 'team' && !schedule.taskFirst
   );
   const preserveOneShot = Boolean(
-    schedule && !taskFirst && mode !== 'team' &&
-    mode === (schedule.executionMode ?? 'legacy')
+    schedule && !taskFirst && mode !== 'team' && mode === (schedule.executionMode ?? 'legacy')
   );
-  const oldConfig = preserveTeam || preserveOneShot ? schedule?.launchConfig ?? null : null;
+  const oldConfig = preserveTeam || preserveOneShot ? (schedule?.launchConfig ?? null) : null;
   const original = (field: keyof ScheduleRuntimeEdits): ScheduleLaunchConfig | null =>
     preserveTeam || (preserveOneShot && !edited[field]) ? oldConfig : null;
   const oldProvider = original('provider');
@@ -54,19 +58,30 @@ export function resolveScheduleLaunchConfig({
 
   return {
     ...proposed,
-    providerId: taskFirst ? savedTeam?.providerId
-      : oldProvider ? oldProvider.providerId : proposed.providerId,
-    providerBackendId: taskFirst ? savedTeam?.providerBackendId
-      : oldProvider ? oldProvider.providerBackendId : proposed.providerBackendId,
+    providerId: taskFirst
+      ? savedTeam?.providerId
+      : oldProvider
+        ? oldProvider.providerId
+        : proposed.providerId,
+    providerBackendId: taskFirst
+      ? savedTeam?.providerBackendId
+      : oldProvider
+        ? oldProvider.providerBackendId
+        : proposed.providerBackendId,
     model: taskFirst ? undefined : oldModel ? oldModel.model : proposed.model,
     effort: taskFirst ? undefined : oldEffort ? oldEffort.effort : proposed.effort,
     fastMode: taskFirst ? undefined : oldFastMode ? oldFastMode.fastMode : proposed.fastMode,
     // An explicit model/provider/effort change can invalidate the previous
     // Fast-mode eligibility. Keep the selected preference, not stale resolution.
-    resolvedFastMode: taskFirst ? undefined
+    resolvedFastMode: taskFirst
+      ? undefined
       : oldFastMode && !(edited.model || edited.provider || edited.effort || edited.fastMode)
-        ? oldFastMode.resolvedFastMode : proposed.resolvedFastMode,
-    skipPermissions: taskFirst ? undefined
-      : oldPermissions ? oldPermissions.skipPermissions : proposed.skipPermissions,
+        ? oldFastMode.resolvedFastMode
+        : proposed.resolvedFastMode,
+    skipPermissions: taskFirst
+      ? undefined
+      : oldPermissions
+        ? oldPermissions.skipPermissions
+        : proposed.skipPermissions,
   };
 }

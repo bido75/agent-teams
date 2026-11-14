@@ -50,7 +50,10 @@ export function normalizeFontFamily(value: string | null): string | null {
   return family;
 }
 /** Case-insensitive CSS family uniqueness; keep the stored family spelling selectable. */
-export function uniqueFontFamilies(names: readonly string[], selected: string | null = null): string[] {
+export function uniqueFontFamilies(
+  names: readonly string[],
+  selected: string | null = null
+): string[] {
   const families = new Map<string, string>();
   for (const name of names) families.set(name.toLowerCase(), name);
   if (selected) families.set(selected.toLowerCase(), selected);
@@ -110,9 +113,7 @@ function checkKeys(
 function hexLuminance(hex: string): number {
   const channels = [1, 3, 5].map((offset) => {
     const normalized = Number.parseInt(hex.slice(offset, offset + 2), 16) / 255;
-    return normalized <= 0.04045
-      ? normalized / 12.92
-      : ((normalized + 0.055) / 1.055) ** 2.4;
+    return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
   });
   return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
 }
@@ -152,7 +153,12 @@ export function validateCustomThemes(value: unknown): CustomTheme[] {
       }
     }
     const palette = colors as ThemePalette;
-    for (const surface of ['surface', 'surfaceRaised', 'surfaceOverlay', 'surfaceSidebar'] as const) {
+    for (const surface of [
+      'surface',
+      'surfaceRaised',
+      'surfaceOverlay',
+      'surfaceSidebar',
+    ] as const) {
       for (const foreground of ['text', 'textSecondary'] as const) {
         if (contrastRatio(palette[foreground], palette[surface]) < 4.5) {
           throw new Error(`${label}: ${foreground} needs 4.5:1 contrast against ${surface}`);
@@ -164,7 +170,12 @@ export function validateCustomThemes(value: unknown): CustomTheme[] {
         }
       }
     }
-    for (const surface of ['surface', 'surfaceRaised', 'surfaceOverlay', 'surfaceSidebar'] as const) {
+    for (const surface of [
+      'surface',
+      'surfaceRaised',
+      'surfaceOverlay',
+      'surfaceSidebar',
+    ] as const) {
       for (const border of ['border', 'borderSubtle', 'borderEmphasis'] as const) {
         if (contrastRatio(palette[border], palette[surface]) < 1.15) {
           throw new Error(`${label}: ${border} must be visible against ${surface}`);
@@ -211,13 +222,19 @@ export function parseAppearance(value: unknown): AppearancePreferences {
   // Existing v1 records predate typography. Keep their themes and zoom unchanged.
   let fontFamily: string | null = null;
   try {
-    fontFamily = normalizeFontFamily(value.fontFamily === undefined ? null : value.fontFamily as string | null);
+    fontFamily = normalizeFontFamily(
+      value.fontFamily === undefined ? null : (value.fontFamily as string | null)
+    );
   } catch {
     // A malicious/malformed persisted family is never projected into CSS.
   }
   const size = value.fontSizePercent;
-  const fontSizePercent = typeof size === 'number' && Number.isInteger(size) &&
-    size >= MIN_FONT_SIZE_PERCENT && size <= MAX_FONT_SIZE_PERCENT ? size : 100;
+  const fontSizePercent =
+    typeof size === 'number' &&
+    Number.isInteger(size) &&
+    size >= MIN_FONT_SIZE_PERCENT &&
+    size <= MAX_FONT_SIZE_PERCENT
+      ? size
+      : 100;
   return { version: 1, zoomPercent, fontFamily, fontSizePercent, activeCustomThemeId, themes };
 }
-

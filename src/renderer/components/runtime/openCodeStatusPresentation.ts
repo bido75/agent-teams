@@ -2,7 +2,8 @@ import { sanitizeRuntimeDiagnosticText } from '@shared/utils/runtimeDiagnosticTe
 
 import type { CliExternalRuntimeDiagnostic, CliProviderStatus } from '@shared/types';
 
-const FAILURE_MESSAGE = /\b(?:error|failed|failure|unavailable|timeout|timed out|cannot|could not|denied|invalid)\b/i;
+const FAILURE_MESSAGE =
+  /\b(?:error|failed|failure|unavailable|timeout|timed out|cannot|could not|denied|invalid)\b/i;
 
 export function hasTopLevelOpenCodeFailure(provider: CliProviderStatus): boolean {
   return (

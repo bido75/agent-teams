@@ -3268,10 +3268,11 @@ export const TeamDetailView = memo(function TeamDetailView({
                   selectedSessionId={kanbanFilter.sessionId}
                   onSelectSession={(id) => {
                     setKanbanFilter((prev) => ({ ...prev, sessionId: id }));
-                    contentRef.current?.querySelector('[data-section-id="kanban"]')
-                      ?.dispatchEvent(new CustomEvent('team-section-navigate', {
+                    contentRef.current?.querySelector('[data-section-id="kanban"]')?.dispatchEvent(
+                      new CustomEvent('team-section-navigate', {
                         detail: { focus: document.activeElement?.matches(':focus-visible') },
-                      }));
+                      })
+                    );
                   }}
                   projectPath={data.config.projectPath}
                 />
